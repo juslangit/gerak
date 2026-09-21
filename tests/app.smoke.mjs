@@ -213,13 +213,35 @@ try {
 
   g.setFrame(0);
 
-  // ── export, and check the file really landed on the disk ──────────
+  // ── export: .glb here, the rest through Blender ───────────────────
+  const caps = await g.api(`/api/capabilities?t=${encodeURIComponent(window.GERAK_TOKEN)}`);
+  say(true, `Blender ${caps.blender ? 'found' : 'NOT found'} at ${caps.blenderPath}`);
+
   document.querySelector('#btn-export').click();
-  const result = await until('the export to finish', () => {
-    const t = document.querySelector('#toast');
-    return !t.hidden && /Exported|failed/.test(t.textContent) ? t.textContent : null;
-  }, 45000);
-  say(/Exported/.test(result), `export said: ${result.replace(/ — opening.*/, '')}`);
+  say(!document.querySelector('#export-pop').hidden, 'the export panel opened');
+
+  document.querySelector('#fmt-fbx').checked = caps.blender;
+  document.querySelector('#fmt-blend').checked = caps.blender;
+  // The video is the slowest and the most fragile of the four, so it is the
+  // one most worth actually rendering in a test rather than assuming.
+  document.querySelector('#fmt-mp4').checked = caps.blender;
+  document.querySelector('#btn-export-go').click();
+
+  const note = await until('the export to finish', () => {
+    const el = document.querySelector('#export-note');
+    const t = el.textContent;
+    return t && !/Writing|working|rendering/i.test(t) ? t : null;
+  }, 180000);
+
+  const files = note.split('\n').filter((l) => /\.(glb|fbx|blend|mp4)\b/.test(l));
+  say(files.some((l) => l.includes('.glb')), `wrote ${files.find((l) => l.includes('.glb'))?.trim()}`);
+  if (caps.blender) {
+    say(files.some((l) => l.includes('.fbx')), `wrote ${files.find((l) => l.includes('.fbx'))?.trim() || 'NO FBX'}`);
+    say(files.some((l) => l.includes('.blend')), `wrote ${files.find((l) => l.includes('.blend'))?.trim() || 'NO BLEND'}`);
+    say(files.some((l) => l.includes('.mp4')), `wrote ${files.find((l) => l.includes('.mp4'))?.trim() || 'NO VIDEO'}`);
+  }
+  say(!document.querySelector('#export-note').classList.contains('is-bad'),
+    'the export reported no problems');
 
   // ── saving a clip, and reading the list back ──────────────────────
   g.state.clip.name = 'smoke-test-clip';

@@ -26,6 +26,8 @@ folders listed in ROOTS.
 
 import base64
 import json
+import shutil
+import subprocess
 import mimetypes
 import os
 import re
@@ -43,6 +45,11 @@ WEB = os.path.join(HERE, "web")
 CLIPS = os.path.join(HERE, "clips")
 EXPORTS = os.path.join(HERE, "exports")
 CACHE = os.path.join(HERE, ".library.json")
+BLENDER_DIR = os.path.join(HERE, "blender")
+JOBS = os.path.join(HERE, ".jobs")
+
+BLENDER = os.environ.get(
+    "GERAK_BLENDER", "/Applications/Blender.app/Contents/MacOS/Blender")
 
 PORT = int(os.environ.get("GERAK_PORT", "8778"))
 TOKEN = secrets.token_urlsafe(18)
@@ -214,6 +221,66 @@ def list_clips():
 
 
 # --------------------------------------------------------------------------
+# Blender, for the formats a browser cannot write
+# --------------------------------------------------------------------------
+
+BLENDER_MARK = "@@GERAK@@"
+
+
+def blender_available():
+    return os.path.exists(BLENDER) or shutil.which("blender") is not None
+
+
+def run_blender(job, timeout=900):
+    """Run one job through headless Blender and hand back what it reported.
+
+    Blender is run per job rather than kept alive. A conversion takes a couple
+    of seconds and a render takes some tens of seconds, so the half second it
+    costs to start is not worth the complication of a long-running process
+    that has to be watched, restarted and cleaned up.
+    """
+    exe = BLENDER if os.path.exists(BLENDER) else shutil.which("blender")
+    if not exe:
+        return {"ok": False, "written": [],
+                "problems": ["Blender was not found at %s. Set GERAK_BLENDER "
+                             "to where it is installed." % BLENDER]}
+
+    os.makedirs(JOBS, exist_ok=True)
+    job_file = os.path.join(JOBS, "job-%s.json" % secrets.token_hex(6))
+    with open(job_file, "w") as f:
+        json.dump(job, f)
+
+    cmd = [exe, "--background", "--factory-startup",
+           "--python", os.path.join(BLENDER_DIR, "worker.py"),
+           "--", job_file]
+    log("blender:", " ".join(job.get("targets", [])), "on",
+        os.path.basename(job.get("source", "?")))
+    started = time.time()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "written": [],
+                "problems": ["Blender took longer than %d seconds and was stopped."
+                             % timeout]}
+    finally:
+        try:
+            os.remove(job_file)
+        except OSError:
+            pass
+
+    for line in proc.stdout.splitlines():
+        if line.startswith(BLENDER_MARK):
+            result = json.loads(line[len(BLENDER_MARK):])
+            result["seconds"] = round(time.time() - started, 1)
+            log("blender finished in %.1fs" % result["seconds"])
+            return result
+
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+    return {"ok": False, "written": [],
+            "problems": ["Blender said nothing back. " + " / ".join(tail)]}
+
+
+# --------------------------------------------------------------------------
 # the web server
 # --------------------------------------------------------------------------
 
@@ -321,6 +388,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorised():
             return self.send_json({"error": "not authorised"}, 403)
 
+        if path == "/api/capabilities":
+            return self.send_json({
+                "blender": blender_available(),
+                "blenderPath": BLENDER,
+                "exports": EXPORTS.replace(HOME, "~"),
+            })
+
         if path == "/api/library":
             refresh = (query.get("refresh") or ["0"])[0] == "1"
             return self.send_json({"items": get_library(refresh)})
@@ -380,6 +454,32 @@ class Handler(BaseHTTPRequestHandler):
                                    "shown": full.replace(HOME, "~"),
                                    "bytes": len(raw)})
 
+        if path == "/api/convert":
+            # Hand a .glb that gerak has already written over to Blender, for
+            # the formats it cannot write itself.
+            source = body.get("path") or ""
+            real = os.path.realpath(source)
+            if not real.startswith(os.path.realpath(EXPORTS) + os.sep) \
+                    or not os.path.isfile(real):
+                return self.send_json({"error": "that is not a gerak export"}, 403)
+
+            targets = [t for t in (body.get("targets") or [])
+                       if t in ("fbx", "blend", "mp4")]
+            if not targets:
+                return self.send_json({"error": "nothing to convert to"}, 400)
+
+            result = run_blender({
+                "source": real,
+                "out_dir": EXPORTS,
+                "name": SAFE_NAME.sub("-", (body.get("name") or "clip").lower()).strip("-"),
+                "fps": int(body.get("fps") or 24),
+                "targets": targets,
+                "spin": bool(body.get("spin")),
+            })
+            for item in result.get("written", []):
+                item["shown"] = item["path"].replace(HOME, "~")
+            return self.send_json(result)
+
         if path == "/api/clip/delete":
             full = clip_path(body.get("slug") or "")
             if os.path.exists(full):
@@ -399,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    for folder in (CLIPS, EXPORTS):
+    for folder in (CLIPS, EXPORTS, JOBS):
         os.makedirs(folder, exist_ok=True)
     url = "http://127.0.0.1:%d/?t=%s" % (PORT, TOKEN)
     try:

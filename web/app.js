@@ -710,51 +710,111 @@ $('#btn-save').onclick = async () => {
   }
 };
 
-$('#btn-export').onclick = async () => {
+/* Export.
+ *
+ * The .glb is always written here in the browser, because that is the file
+ * whose animation has been checked. Everything else - .fbx, .blend, a video -
+ * is made from that same .glb by Blender, so there is only ever one path
+ * from the timeline to a file, and three conversions off the end of it.
+ */
+
+$('#btn-export').onclick = () => {
+  const pop = $('#export-pop');
+  pop.hidden = !pop.hidden;
+  if (!pop.hidden) $('#export-note').textContent = '';
+};
+
+// Click anywhere else and the panel goes away.
+document.addEventListener('pointerdown', (e) => {
+  const pop = $('#export-pop');
+  if (pop.hidden) return;
+  if (pop.contains(e.target) || $('#btn-export').contains(e.target)) return;
+  pop.hidden = true;
+});
+
+async function buildGLB() {
+  // Export from the rest pose. In a .glb the node transforms are the pose
+  // the model sits in when nothing is playing, so leaving it mid-animation
+  // would bake frame 37 in as the model's actual shape.
+  const wasAt = state.frame;
+  for (const bone of state.bones) {
+    const rest = view.restPose.get(bone.name);
+    if (rest) { bone.quaternion.copy(rest.q); bone.position.copy(rest.p); }
+  }
+  view.scene.updateMatrixWorld(true);
+
+  const animation = state.clip.toAnimationClip(state.bones);
+  const exporter = new GLTFExporter();
+  const buffer = await new Promise((resolve, reject) => {
+    exporter.parse(view.model, resolve, reject, {
+      binary: true,
+      animations: [animation],
+      onlyVisible: false,
+      includeCustomExtensions: false,
+    });
+  });
+
+  setFrame(wasAt);
+  return buffer;
+}
+
+$('#btn-export-go').onclick = async () => {
   if (state.clip.isEmpty()) { toast('Nothing to export yet — no keys.'); return; }
   player.pause();
-  const btn = $('#btn-export');
+
+  const extras = [
+    $('#fmt-fbx').checked && 'fbx',
+    $('#fmt-blend').checked && 'blend',
+    $('#fmt-mp4').checked && 'mp4',
+  ].filter(Boolean);
+
+  const btn = $('#btn-export-go');
+  const note = $('#export-note');
+  note.classList.remove('is-bad');
   btn.disabled = true;
-  btn.textContent = 'Exporting…';
+  const base = `${state.model.name.replace(/\.\w+$/, '')}-${state.clip.name}`
+    .replace(/^(.+)-\1$/, '$1');
 
   try {
-    // Export from the rest pose. In a .glb the node transforms are the pose
-    // the model sits in when nothing is playing, so leaving it mid-animation
-    // would bake frame 37 in as the model's actual shape.
-    const wasAt = state.frame;
-    for (const bone of state.bones) {
-      const rest = view.restPose.get(bone.name);
-      if (rest) { bone.quaternion.copy(rest.q); bone.position.copy(rest.p); }
-    }
-    view.scene.updateMatrixWorld(true);
+    note.textContent = 'Writing the .glb…';
+    btn.textContent = 'Writing…';
+    const saved = await api('/api/export/save', {
+      name: base, ext: 'glb', data: toBase64(await buildGLB()),
+    });
 
-    const animation = state.clip.toAnimationClip(state.bones);
-    const exporter = new GLTFExporter();
-    const buffer = await new Promise((resolve, reject) => {
-      exporter.parse(view.model, resolve, reject, {
-        binary: true,
-        animations: [animation],
-        onlyVisible: false,
-        includeCustomExtensions: false,
+    const written = [`${saved.shown}  (${kb(saved.bytes)})`];
+
+    if (extras.length) {
+      note.textContent = extras.includes('mp4')
+        ? 'Blender is rendering the video. This takes a moment.'
+        : 'Blender is writing the other formats…';
+      btn.textContent = 'Blender is working…';
+
+      const result = await api('/api/convert', {
+        path: saved.path,
+        name: base,
+        targets: extras,
+        fps: state.clip.fps,
+        spin: $('#fmt-spin').checked,
       });
-    });
 
-    setFrame(wasAt);
+      for (const item of result.written) written.push(`${item.shown}  (${kb(item.bytes)})`);
+      if (result.problems && result.problems.length) {
+        note.classList.add('is-bad');
+        written.push('', ...result.problems);
+      }
+    }
 
-    const base = `${state.model.name.replace(/\.\w+$/, '')}-${state.clip.name}`;
-    const res = await api('/api/export/save', {
-      name: base,
-      ext: 'glb',
-      data: toBase64(buffer),
-    });
-    toast(`Exported ${res.shown} (${kb(res.bytes)}) — opening it in Finder.`);
-    api('/api/reveal', { path: res.path }).catch(() => {});
+    note.textContent = written.join('\n');
+    toast(`Exported ${written.length} file${written.length === 1 ? '' : 's'} to exports/.`);
+    api('/api/reveal', { path: saved.path }).catch(() => {});
   } catch (err) {
     console.error(err);
-    toast(`Export failed: ${err.message}`, true);
+    note.classList.add('is-bad');
+    note.textContent = `Export failed: ${err.message}`;
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Export';
+    btn.textContent = 'Write the files';
   }
 };
 
@@ -884,3 +944,15 @@ window.gerak = {
 loadLibrary();
 loadClips();
 renderRuler();
+
+// If Blender is not where we expect it, say so on the export panel rather
+// than letting the first export fail with a puzzle.
+api(`/api/capabilities?t=${encodeURIComponent(TOKEN)}`).then((caps) => {
+  if (caps.blender) return;
+  for (const id of ['fmt-fbx', 'fmt-blend', 'fmt-mp4', 'fmt-spin']) {
+    $(`#${id}`).disabled = true;
+  }
+  $('#export-note').textContent =
+    `Blender was not found at ${caps.blenderPath}, so only .glb can be written. `
+    + 'Set GERAK_BLENDER to where it is installed.';
+}).catch(() => {});

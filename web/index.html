@@ -27,6 +27,20 @@
     <button class="btn" id="btn-save" disabled>Save clip</button>
     <button class="btn btn-primary" id="btn-export" disabled>Export</button>
   </div>
+
+  <div class="export-pop" id="export-pop" hidden>
+    <h3>Export this clip</h3>
+    <p class="export-lead">
+      A <strong>.glb</strong> is always written — everything else is made from
+      it by Blender.
+    </p>
+    <label class="check"><input type="checkbox" id="fmt-fbx"><span>.fbx — for Unreal</span></label>
+    <label class="check"><input type="checkbox" id="fmt-blend"><span>.blend — to finish in Blender</span></label>
+    <label class="check"><input type="checkbox" id="fmt-mp4"><span>.mp4 — a rendered video</span></label>
+    <label class="check indent"><input type="checkbox" id="fmt-spin"><span>turn the camera right round</span></label>
+    <button class="btn btn-primary btn-wide" id="btn-export-go">Write the files</button>
+    <p class="export-note" id="export-note"></p>
+  </div>
 </header>
 
 <main class="workspace">

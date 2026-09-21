@@ -8,3 +8,4 @@ __pycache__/
 
 # Clips are your work, so they stay:
 #   clips/
+.jobs/
