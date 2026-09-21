@@ -784,3 +784,53 @@ kbd {
 }
 .export-note:empty { display: none; }
 .export-note.is-bad { color: #ffb3b1; }
+
+/* ── placing a skeleton ───────────────────────────────────────────── */
+
+.rigbox { border-bottom: 1px solid var(--line); padding-bottom: 16px; flex: none; }
+
+.rig-lead {
+  margin: 0 16px 14px;
+  font-size: 0.86rem;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px 10px;
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+}
+.field > span:first-child { width: 62px; flex: none; }
+.field select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--ink);
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 9px;
+}
+.field select:focus { outline: none; border-color: var(--key); }
+
+.seg-inline { flex: 1; }
+.seg-inline .seg-btn { flex: 1; padding: 8px 4px; font-size: 0.8rem; }
+
+.rigbox .check { padding: 2px 16px 12px; }
+.rigbox .btn-wide { margin-top: 4px; }
+
+.rig-note {
+  margin: 10px 16px 0;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--ink-faint);
+  white-space: pre-wrap;
+}
+.rig-note:empty { display: none; }
+.rig-note.is-bad { color: #ffb3b1; }
+.rig-note.is-good { color: var(--ik); }

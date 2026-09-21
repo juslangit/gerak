@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>gerak — rigging test</title>
+<script type="importmap">
+{ "imports": { "three": "/web/vendor/three.module.js", "three/addons/": "/web/vendor/" } }
+</script>
+<style>
+ body { font: 14px ui-monospace, monospace; background:#16181d; color:#e7e9ee; padding:24px; }
+ .ok { color:#35c08a; } .bad { color:#ef6461; } h1 { font-size:16px; }
+</style>
+</head>
+<body>
+<h1>gerak — putting a skeleton on a model that has none</h1>
+<pre id="out">running…</pre>
+
+<script type="module">
+/* The one thing about rigging that cannot be checked by reasoning: does a
+ * joint placed at the model's left shoulder in gerak end up at the model's
+ * left shoulder in the file Blender sends back?
+ *
+ * Three coordinate conventions meet in that sentence. three.js is Y-up. A
+ * .glb is Y-up. Blender is Z-up. Get the conversion backwards and the rig
+ * arrives lying on its side, with the skin weighted to the wrong bones - and
+ * it looks plausible enough in a thumbnail to be missed.
+ *
+ * So: place the joints, rig it, load the result back, and measure where the
+ * bones actually are against where they were asked to be.
+ */
+
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/GLTFLoader.js';
+import { fitTemplate, guessFacing, headsAndTails, TEMPLATES } from '/web/templates.js';
+
+const out = document.getElementById('out');
+const lines = [];
+let failed = 0;
+let finish;
+window.__done = new Promise((r) => { finish = r; });
+
+const say = (ok, msg) => {
+  lines.push(`<span class="${ok ? 'ok' : 'bad'}">${ok ? '  ok  ' : ' FAIL '}</span>${msg}`);
+  if (!ok) failed++;
+  out.innerHTML = lines.join('\n');
+};
+const note = (msg) => { lines.push(`        ${msg}`); out.innerHTML = lines.join('\n'); };
+
+const params = new URLSearchParams(location.search);
+const token = params.get('t');
+
+const api = async (path, body) => {
+  const res = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'X-Gerak-Token': token, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const doc = await res.json();
+  if (!res.ok) throw new Error(doc.error || res.statusText);
+  return doc;
+};
+
+const modelURL = (p) =>
+  `/api/model?t=${encodeURIComponent(token)}&path=${encodeURIComponent(p)}`;
+
+const loader = new GLTFLoader();
+const load = async (url) => {
+  const buf = await (await fetch(url)).arrayBuffer();
+  return new Promise((ok, no) => loader.parse(buf, '', ok, no));
+};
+
+async function rigOne(modelPath, templateKey, label) {
+  note('');
+  note(`── ${label}: ${modelPath.split('/').pop()} with the "${TEMPLATES[templateKey].label}" template`);
+
+  const gltf = await load(modelURL(modelPath));
+  const box = new THREE.Box3().setFromObject(gltf.scene);
+  const size = box.getSize(new THREE.Vector3());
+  say(size.length() > 0, `the model measures ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
+
+  const facing = guessFacing(templateKey, box);
+  const placed = fitTemplate(templateKey, box, facing);
+  say(placed.length === TEMPLATES[templateKey].joints.length,
+    `placed ${placed.length} joints (facing guessed as ${facing}°)`);
+
+  // Every joint should land inside the model's own box, or the template is
+  // fitted wrongly no matter what Blender then does with it.
+  const strays = placed.filter((p) => {
+    const v = new THREE.Vector3(...p.at);
+    return v.x < box.min.x - 1e-6 || v.x > box.max.x + 1e-6
+      || v.y < box.min.y - 1e-6 || v.y > box.max.y + 1e-6
+      || v.z < box.min.z - 1e-6 || v.z > box.max.z + 1e-6;
+  });
+  say(strays.length === 0,
+    strays.length ? `${strays.length} joints landed outside the model: ${strays.slice(0, 3).map((s) => s.name)}`
+                  : 'every joint landed inside the model');
+
+  const joints = headsAndTails(placed);
+  say(joints.every((j) => {
+    const h = new THREE.Vector3(...j.head), t = new THREE.Vector3(...j.tail);
+    return h.distanceTo(t) > 1e-7;
+  }), 'every bone has a length — none would be dropped by Blender');
+
+  // ── hand it to Blender ──────────────────────────────────────────
+  const started = performance.now();
+  const result = await api('/api/rig', {
+    source: modelPath,
+    joints,
+    name: `test-${label.toLowerCase().replace(/\W+/g, '-')}`,
+  });
+  say(result.ok, result.ok
+    ? `Blender built the rig in ${((performance.now() - started) / 1000).toFixed(1)}s — ${result.bones} bones, ${result.weights}`
+    : `Blender failed: ${(result.problems || []).join('; ')}`);
+  if (!result.ok) return;
+
+  say(result.bones === placed.length,
+    `the rig has ${result.bones} bones for ${placed.length} placed joints`);
+  say(result.vertex_groups > 0,
+    `the mesh was weighted — ${result.vertex_groups} vertex groups`);
+
+  // ── load it back and see where the bones really are ─────────────
+  const rigged = await load(modelURL(result.out));
+  const bones = [];
+  const seen = new Set();
+  let skinned = 0;
+  rigged.scene.traverse((o) => {
+    if (o.isSkinnedMesh) {
+      skinned++;
+      for (const b of o.skeleton.bones) if (!seen.has(b.uuid)) { seen.add(b.uuid); bones.push(b); }
+    }
+  });
+  const byName = new Map(placed.map((p) => [p.name, new THREE.Vector3(...p.at)]));
+  const byNameCheck = byName;
+  say(skinned > 0, `the rigged file has ${skinned} skinned mesh(es) — the skin is bound to the skeleton`);
+  /* Blender's glTF exporter adds a bone of its own, called "neutral_bone",
+   * when part of the mesh got no weight from any real bone. So the count is
+   * allowed to be higher - what matters is that every placed joint is there,
+   * and that we say out loud how much of the mesh went unclaimed. */
+  const extra = bones.filter((b) => !byNameCheck.has(b.name)).map((b) => b.name);
+  say(bones.length >= placed.length,
+    `the skeleton has ${bones.length} bones for ${placed.length} placed joints`
+    + (extra.length ? ` (plus ${extra.join(', ')}, added by Blender)` : ''));
+
+  if (result.unweighted) {
+    const share = (result.unweighted / result.vertices) * 100;
+    say(share < 12,
+      `${result.unweighted} of ${result.vertices} vertices (${share.toFixed(1)}%) were not reached by any bone`);
+  } else {
+    say(true, `every one of the ${result.vertices} vertices is weighted to a bone`);
+  }
+
+  rigged.scene.updateMatrixWorld(true);
+  let worst = 0, worstName = '';
+  let matched = 0;
+  for (const bone of bones) {
+    const want = byName.get(bone.name);
+    if (!want) continue;
+    matched++;
+    const got = new THREE.Vector3();
+    bone.getWorldPosition(got);
+    const off = got.distanceTo(want);
+    if (off > worst) { worst = off; worstName = bone.name; }
+  }
+  say(matched === placed.length, `${matched} bones came back under the names they were given`);
+
+  const tolerance = size.length() * 0.001;
+  say(worst < tolerance,
+    `every bone came back where it was put — worst was "${worstName}", off by ${worst.toExponential(2)} (model is ${size.length().toFixed(2)} across)`);
+
+  // The single check that catches an up-axis mix-up: the head must be above
+  // the hips, and it must be near the top of the model.
+  const top = bones.find((b) => /head|muzzle|beak/i.test(b.name));
+  const bottom = bones.find((b) => /foot|paw|toe|hips|root/i.test(b.name));
+  if (top && bottom) {
+    const a = new THREE.Vector3(), b = new THREE.Vector3();
+    top.getWorldPosition(a); bottom.getWorldPosition(b);
+    say(a.y > b.y,
+      `"${top.name}" (y=${a.y.toFixed(3)}) sits above "${bottom.name}" (y=${b.y.toFixed(3)}) — the rig is the right way up`);
+  }
+}
+
+try {
+  const models = JSON.parse(params.get('models') || '[]');
+  for (const { path, template, label } of models) {
+    await rigOne(path, template, label);
+  }
+} catch (err) {
+  say(false, `threw: ${err && err.message ? err.message : err}`);
+  console.error(err);
+}
+
+lines.push('');
+lines.push(failed ? `<span class="bad">${failed} failed</span>` : '<span class="ok">all good</span>');
+out.innerHTML = lines.join('\n');
+finish({ failed, text: lines.join('\n').replace(/<[^>]+>/g, '') });
+</script>
+</body>
+</html>

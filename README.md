@@ -4,7 +4,11 @@
 
 *gerak* means motion. You open a model, click a joint, turn it, and say
 "the pose is this, here". Do that a few times along a timeline and you have an
-animation. Export it and it goes into Godot, Unreal or Blender.
+animation. Export it and it goes into Godot, Unreal, Blender or a video.
+
+If the model has no skeleton, you give it one: drop a ready-made skeleton on
+it — human, four-legged animal, bird, fish, snake — nudge the joints where
+they belong, and Blender works out which part of the skin each bone moves.
 
 It runs entirely on this machine: the Python that comes with macOS, the Blender
 already installed, and a copy of three.js kept in the folder. Nothing to
@@ -30,7 +34,8 @@ and it is why all of gerak's work is turning bones.
 ## What you do with it
 
 **Open a model.** The left panel lists every 3D model on this Mac, with the ones
-that have a skeleton first. There are 312 of those, mostly Meshy characters.
+that have a skeleton first. There are 312 of those, mostly Meshy characters —
+and 3,100 more with no skeleton, which you can now give one.
 
 **Click a joint.** Every bone gets an amber dot, drawn on top of the mesh so you
 can reach a hip joint that is buried inside a body. Click one and a rotation
@@ -45,8 +50,36 @@ the moments that matter.
 
 **Play it.** Space bar. Loop is on by default.
 
-**Export it.** `.glb` with the animation baked in, written to `exports/` and
-shown in Finder.
+**Turn IK on for an arm or a leg.** Each limb has an **FK / IK** switch in the
+Limbs panel. On FK you turn the joints one at a time. On IK you get a green
+diamond to drag, and the shoulder and elbow are worked out to put the hand
+there. Pin a foot and it stays planted while you move the body.
+
+**Export it.** `.glb` for Godot, `.fbx` for Unreal, `.blend` to finish by
+hand, and an `.mp4` of the clip playing. Everything lands in `exports/` and
+opens in Finder.
+
+### Giving a model a skeleton
+
+Open something with no skeleton and a rigging panel appears instead of the
+limbs panel.
+
+1. **Pick a skeleton** — human, four-legged animal, bird, fish, or a plain
+   chain for a snake, rope or tail.
+2. **Say which way it faces.** Nothing agrees about which way is forwards, so
+   there is a Front / Right / Back / Left switch. For a long animal gerak
+   guesses from the shape of the model; for a person it does not guess,
+   because a person is very nearly as deep as they are wide.
+3. **Place it.** The skeleton is fitted into the model's own bounding box, so
+   the same template fits a chess piece and a two-metre character. Drag any
+   joint onto the right part of the model — the joints below it come along.
+4. **Bind.** Blender weights the skin to the bones and hands back a rigged
+   copy, which opens straight away, ready to pose. **Your original file is
+   never touched** — the rigged copy goes in `exports/`.
+
+If some of the mesh was too far from every bone to be claimed, gerak says how
+many vertices that was. Those parts will not move; put a joint nearer and bind
+again.
 
 ### If the model already has animations in it
 
@@ -70,15 +103,18 @@ what you get is exactly what the file did.
 ## Where things are
 
 ```
-server.py        finds your models, serves the page, keeps your clips
-web/index.html   the page
-web/style.css    the look
-web/scene.js     the viewport — the model, the joint dots, the ring
-web/clip.js      the animation maths — keys, in-betweens, export, playback
-web/app.js       the wiring between those three
-clips/           your saved animations, as plain readable JSON
-exports/         the files gerak writes for you
-tests/           see below
+server.py          finds your models, serves the page, runs Blender
+blender/worker.py  the jobs Blender does: rigging, .fbx, .blend, video
+web/index.html     the page
+web/style.css      the look
+web/scene.js       the viewport — the model, the joint dots, the ring
+web/clip.js        the animation maths — keys, in-betweens, export, playback
+web/ik.js          the IK solver, and finding the limbs on a skeleton
+web/templates.js   the ready-made skeletons, and fitting one to a model
+web/app.js         the wiring between all of those
+clips/             your saved animations, as plain readable JSON
+exports/           the files gerak writes for you
+tests/             see below
 ```
 
 A clip is a small JSON file you can open and read. It names the model it was
@@ -92,18 +128,29 @@ gerak --no-open                       # start it, note the token it prints
 GERAK_TOKEN=<the token> tests/run.sh
 ```
 
-Three layers, in order of how much they prove:
+Six suites, in order of how much each one proves:
 
 1. **The animation maths**, in Node, no browser needed. Is frame 9 really
    between the keys at 6 and 12? Does a joint you never touched stay exactly
    where the model was built?
-2. **The round trip**, in a real browser, on a real model off your disk. Read a
+2. **The IK solver.** Does the hand land where you put it — including when the
+   target is out of reach, sitting on top of the shoulder, or the limb is
+   already dead straight?
+3. **The round trip**, in a real browser, on a real model off your disk. Read a
    `.glb`, pose it, write a new `.glb`, read that back — is the motion in there?
-3. **The app**, driven like a person drives it: open a model, click a joint,
-   turn it, key it, play it, export it.
+4. **Rigging**, on a human and on a dog. Does a joint placed at the left
+   shoulder end up at the left shoulder after Blender has had it? Three
+   coordinate conventions meet there and a mistake looks plausible in a
+   thumbnail, so it is measured rather than eyeballed.
+5. **The app**, driven like a person drives it: open a model, click a joint,
+   turn it, key it, play it, drag an IK handle, pin a foot, export all four
+   formats.
+6. **The rigging flow**, end to end: a model with no skeleton becomes a rigged,
+   posed, keyed, IK-driven animation without anybody touching Blender.
 
-The exported file has also been opened in Blender and checked: armature intact,
-the action on the right bone, the clip the right length, the skin still bound.
+The exported files have also been opened in Blender and checked by hand:
+armature intact, the action on the right bone, the clip the right length, the
+skin still bound — and a frame of the rendered video looked at with eyes.
 
 ## Why it locks itself
 
@@ -117,8 +164,27 @@ before it is checked, so `..` and symlinks cannot walk out.
 ## Where this sits next to your other tools
 
 - **boneka** *makes* models and rigs them, and animates by prompt.
-  gerak *animates by hand*, and opens anything, not only boneka's output.
+  gerak *animates by hand*, and opens anything on the Mac, not only boneka's
+  output. boneka's decision D-005 deliberately left IK out; gerak is where it
+  lives.
 - **gudang** *judges and prepares* assets that arrive from elsewhere. Its own
   scope says characters, rigging and animation are not its job.
 
 Nothing here overlaps either of them, which is deliberate.
+
+## What Blender is used for, and what it is not
+
+gerak does the interactive half itself, in the browser, because a round trip
+to Blender on every drag would make posing unusable. Blender is called only
+for work that happens once, on a button press:
+
+| Job | Where | Why there |
+|---|---|---|
+| Posing, IK, the timeline, playback | browser | has to be instant |
+| Writing the `.glb` | browser | three.js already holds the scene |
+| Weighting a skin to new bones | Blender | nothing else does heat weighting |
+| `.fbx`, `.blend`, video | Blender | a browser cannot write them |
+
+Blender runs headless, one process per job, and is told what to do by a JSON
+file. If it is installed somewhere else, set `GERAK_BLENDER` to the path —
+gerak checks on startup and says so on the export panel if it cannot find it.

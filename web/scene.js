@@ -387,6 +387,13 @@ export class Viewport {
     for (const m of this.markers) this.jointGroup.remove(m);
     this.markers = [];
     this.clearHandles();
+    if (this.draftRoot) { this.scene.remove(this.draftRoot); this.draftRoot = null; }
+  }
+
+  /** The model's box, in world space. */
+  modelBox() {
+    this.scene.updateMatrixWorld(true);
+    return new THREE.Box3().setFromObject(this.model);
   }
 
   _frameCamera() {
@@ -456,6 +463,98 @@ export class Viewport {
     for (; i < attr.count; i++) attr.setXYZ(i, 0, 0, 0);
     attr.needsUpdate = true;
     this.boneLines.geometry.setDrawRange(0, attr.count);
+  }
+
+  // ── a skeleton that does not exist yet ────────────────────────────
+
+  /**
+   * Put a draft skeleton into the scene.
+   *
+   * These are real three.js bones, parented to each other exactly as the
+   * finished rig will be - they just have no skin attached yet. Making them
+   * real bones means the joint dots, the tree, selection and the move gizmo
+   * all work on them with no special cases, and dragging a shoulder carries
+   * the arm below it, which is what you would expect.
+   *
+   * `placed` holds world positions; bones hold positions relative to their
+   * parent, so each one is converted as it is hung on the tree.
+   */
+  buildDraft(placed) {
+    this.clearDraft();
+    this.draftRoot = new THREE.Group();
+    this.scene.add(this.draftRoot);
+
+    const made = new Map();
+    for (const p of placed) {
+      const bone = new THREE.Bone();
+      bone.name = p.name;
+      made.set(p.name, bone);
+    }
+    for (const p of placed) {
+      const bone = made.get(p.name);
+      const parent = p.parent && made.get(p.parent);
+      (parent || this.draftRoot).add(bone);
+    }
+
+    // Parents first, so a child's parent already sits where it belongs when
+    // the child's local position is worked out from its world one.
+    const order = [];
+    const walk = (bone) => { order.push(bone); for (const c of bone.children) walk(c); };
+    for (const child of this.draftRoot.children) walk(child);
+
+    const byName = new Map(placed.map((p) => [p.name, p]));
+    for (const bone of order) {
+      const p = byName.get(bone.name);
+      bone.parent.updateMatrixWorld(true);
+      bone.position.copy(bone.parent.worldToLocal(new THREE.Vector3(...p.at)));
+      bone.updateMatrixWorld(true);
+    }
+
+    this.draftRoot.updateMatrixWorld(true);
+    this.bones = order;
+    this.restPose.clear();
+    for (const bone of this.bones) {
+      this.restPose.set(bone.name, {
+        q: bone.quaternion.clone(), p: bone.position.clone(), s: bone.scale.clone(),
+      });
+    }
+
+    for (const m of this.markers) this.jointGroup.remove(m);
+    this.markers = [];
+    this._buildMarkers();
+    this.select(null);
+    this.setGizmoMode('translate');
+    return this.bones;
+  }
+
+  clearDraft() {
+    if (!this.draftRoot) return;
+    this.scene.remove(this.draftRoot);
+    this.draftRoot = null;
+    for (const m of this.markers) this.jointGroup.remove(m);
+    this.markers = [];
+    this.bones = [];
+    this.select(null);
+  }
+
+  get hasDraft() { return !!this.draftRoot; }
+
+  /** Where every draft joint sits, in the model's own coordinates. */
+  draftJoints() {
+    this.scene.updateMatrixWorld(true);
+    const world = new THREE.Vector3();
+    return this.bones.map((bone) => {
+      bone.getWorldPosition(world);
+      // The model is stood on the floor for display, so a joint's world
+      // position is not its position in the file. Put it back into the
+      // model's own space before it is sent anywhere.
+      const local = this.model.worldToLocal(world.clone());
+      return {
+        name: bone.name,
+        parent: bone.parent && bone.parent.isBone ? bone.parent.name : null,
+        at: local.toArray(),
+      };
+    });
   }
 
   setSkeletonVisible(on) { this.jointGroup.visible = on; this.boneLines.visible = on; }

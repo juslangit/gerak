@@ -109,6 +109,36 @@
       <p class="hint">Open a model to see its joints.</p>
     </div>
 
+    <div class="rigbox" id="rig-box" hidden>
+      <h2 class="panel-title">This model has no skeleton</h2>
+      <p class="rig-lead">
+        Drop a ready-made skeleton on it, nudge the joints where they belong,
+        then bind. Blender works out which part of the skin each bone moves.
+      </p>
+
+      <label class="field">
+        <span>Skeleton</span>
+        <select id="rig-template"></select>
+      </label>
+      <p class="rig-note" id="rig-template-note"></p>
+
+      <label class="field">
+        <span>Facing</span>
+        <span class="seg seg-inline" id="rig-facing">
+          <button class="seg-btn is-on" data-facing="0">Front</button>
+          <button class="seg-btn" data-facing="90">Right</button>
+          <button class="seg-btn" data-facing="180">Back</button>
+          <button class="seg-btn" data-facing="270">Left</button>
+        </span>
+      </label>
+
+      <label class="check"><input type="checkbox" id="rig-flip"><span>Swap left and right</span></label>
+
+      <button class="btn btn-wide" id="btn-place">Place the skeleton</button>
+      <button class="btn btn-primary btn-wide" id="btn-bind" hidden>Bind the skin to it</button>
+      <p class="rig-note" id="rig-status"></p>
+    </div>
+
     <div class="limbs" id="limbs-box" hidden>
       <h2 class="panel-title">Limbs</h2>
       <div class="limb-list" id="limb-list"></div>

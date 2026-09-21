@@ -231,9 +231,15 @@ export class IKChain {
  */
 
 const ENDS = [
-  { re: /hand/i, kind: 'arm' },
-  { re: /foot|ankle/i, kind: 'leg' },
+  { re: /hand|wrist/i, kind: 'arm' },
+  { re: /foot|ankle|paw|hoof/i, kind: 'leg' },
 ];
+
+/* Things that look like the end of a limb but are not: the bone past the
+ * hand, and the fingers and toes hanging off it. Without this a template
+ * with a "LeftHandTip" produces two left arms - one ending at the hand and
+ * one ending at the tip - and both claim the same limb. */
+const NOT_AN_END = /tip$|end$|_end|nub|toe|thumb|finger|index|middle|ring|pinky|digit/i;
 
 const SIDE = [
   { re: /left/i, side: 'Left' },                       // mixamorigLeftHand
@@ -247,6 +253,30 @@ function sideOf(name) {
   return '';
 }
 
+/**
+ * A readable name for a limb, taken from the joint on the end of it.
+ *
+ * Naming limbs "arm" and "leg" is not enough for an animal: a dog has four
+ * legs, and two of them are its front ones. So the label is built from the
+ * end joint's own name instead - "Left hand", "Left hind paw" - which is
+ * always distinct and always matches what you would call it.
+ */
+function limbLabel(tipName, side) {
+  // Split the camel case FIRST, so "LeftFoot" becomes "Left Foot" and the
+  // side can then be taken off as a word. The other way round leaves
+  // "Left left foot", because "LeftFoot" has no word boundary in it.
+  let word = tipName
+    .replace(/^(mixamorig|Bip\d*|Armature)[:_|]?/i, '')
+    .replace(/[_.]/g, ' ')
+    .replace(/\d+$/, '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')       // HindPaw -> Hind Paw
+    .replace(/\b(left|right|l|r)\b/ig, '')
+    .trim()
+    .toLowerCase();
+  if (!word) word = 'limb';
+  return `${side} ${word}`.trim().replace(/\s+/g, ' ');
+}
+
 export function detectLimbs(bones) {
   const set = new Set(bones);
   const chains = [];
@@ -255,18 +285,21 @@ export function detectLimbs(bones) {
   for (const bone of bones) {
     const end = ENDS.find((e) => e.re.test(bone.name));
     if (!end) continue;
-    // Skip a toe or a finger hanging off the real end of the limb.
-    if (/toe|thumb|index|middle|ring|pinky|finger/i.test(bone.name)) continue;
+    if (NOT_AN_END.test(bone.name)) continue;
 
     const mid = bone.parent;
     const root = mid && mid.parent;
     if (!mid || !root || !set.has(mid) || !set.has(root)) continue;
+
+    // If this joint's own parent is also a hand or a foot, then this one is
+    // the bone past the end, not the end.
+    if (ENDS.some((e) => e.re.test(mid.name)) && !NOT_AN_END.test(mid.name)) continue;
+
     if (used.has(bone.name)) continue;
     used.add(bone.name);
 
     const side = sideOf(bone.name) || sideOf(mid.name) || sideOf(root.name);
-    const label = `${side} ${end.kind}`.trim();
-    chains.push(new IKChain([root, mid, bone], label));
+    chains.push(new IKChain([root, mid, bone], limbLabel(bone.name, side)));
   }
 
   chains.sort((x, y) => x.label.localeCompare(y.label));

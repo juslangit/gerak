@@ -241,7 +241,7 @@ test('four limbs are found on a Meshy-style rig', () => {
   const limbs = detectLimbs(bones);
   assert(limbs.length === 4, `expected 4 limbs, found ${limbs.length}: ${limbs.map((l) => l.label)}`);
   const labels = limbs.map((l) => l.label).sort();
-  assert(JSON.stringify(labels) === JSON.stringify(['Left arm', 'Left leg', 'Right arm', 'Right leg']),
+  assert(JSON.stringify(labels) === JSON.stringify(['Left foot', 'Left hand', 'Right foot', 'Right hand']),
     `got ${labels}`);
 });
 
@@ -251,6 +251,55 @@ test('four limbs are found on a Blender-style rig', () => {
     .concat(/^Left/.test(s) ? '.L' : /^Right/.test(s) ? '.R' : ''));
   const limbs = detectLimbs(bones);
   assert(limbs.length === 4, `expected 4 limbs, found ${limbs.length}: ${limbs.map((l) => l.label)}`);
+});
+
+test('a four-legged animal gets four distinct limbs, front and hind apart', () => {
+  const holder = new THREE.Object3D();
+  const bone = (name, parent, y) => {
+    const b = new THREE.Bone(); b.name = name; b.position.set(0, y, 0);
+    parent.add(b); return b;
+  };
+  const hips = bone('Hips', holder, 0);
+  const chest = bone('Chest', hips, 0.2);
+  const bones = [hips, chest];
+  for (const side of ['Left', 'Right']) {
+    const shoulder = bone(`${side}Shoulder`, chest, -0.1);
+    const upper = bone(`${side}UpperArm`, shoulder, -0.4);
+    const paw = bone(`${side}Paw`, upper, -0.4);
+    const pawTip = bone(`${side}PawTip`, paw, -0.1);
+    const thigh = bone(`${side}Thigh`, hips, -0.1);
+    const shin = bone(`${side}Shin`, thigh, -0.4);
+    const hock = bone(`${side}Hock`, shin, -0.3);
+    const hind = bone(`${side}HindPaw`, hock, -0.2);
+    bones.push(shoulder, upper, paw, pawTip, thigh, shin, hock, hind);
+  }
+  holder.updateMatrixWorld(true);
+
+  const limbs = detectLimbs(bones);
+  const labels = limbs.map((l) => l.label).sort();
+  assert(limbs.length === 4, `expected 4 limbs, got ${limbs.length}: ${labels}`);
+  assert(new Set(labels).size === 4, `two limbs share a name: ${labels}`);
+  assert(labels.join('|') === 'Left hind paw|Left paw|Right hind paw|Right paw',
+    `got ${labels}`);
+});
+
+test('the bone past the hand is not read as a second arm', () => {
+  const bones = humanoid((s) => s);
+  const holder = bones[0].parent;
+  for (const side of ['Left', 'Right']) {
+    const hand = bones.find((b) => b.name === `${side}Hand`);
+    const tip = new THREE.Bone();
+    tip.name = `${side}HandTip`;
+    tip.position.set(0, 0.2, 0);
+    hand.add(tip);
+    bones.push(tip);
+  }
+  holder.updateMatrixWorld(true);
+  const limbs = detectLimbs(bones);
+  assert(limbs.length === 4,
+    `a HandTip produced ${limbs.length} limbs instead of 4: ${limbs.map((l) => l.label)}`);
+  assert(limbs.every((l) => !/tip/i.test(l.tip.name)),
+    'a limb ends on a tip bone');
 });
 
 test('a finger is not mistaken for the end of an arm', () => {

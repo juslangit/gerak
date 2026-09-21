@@ -454,6 +454,30 @@ class Handler(BaseHTTPRequestHandler):
                                    "shown": full.replace(HOME, "~"),
                                    "bytes": len(raw)})
 
+        if path == "/api/rig":
+            # Build a skeleton onto a model that has none, and skin it.
+            # The model must be one of yours; the rigged copy is written into
+            # exports/ rather than over the original, which is never touched.
+            source = body.get("source") or ""
+            if not allowed(source):
+                return self.send_json({"error": "outside the allowed folders"}, 403)
+            joints = body.get("joints") or []
+            if not joints:
+                return self.send_json({"error": "no joints to build from"}, 400)
+
+            name = SAFE_NAME.sub("-", (body.get("name") or "rigged").lower()).strip("-")
+            out = os.path.join(EXPORTS, "%s-rigged.glb" % (name or "model"))
+            result = run_blender({
+                "job": "rig",
+                "source": os.path.realpath(source),
+                "joints": joints,
+                "out": out,
+                "name": body.get("rigName") or "gerak_rig",
+            })
+            if result.get("out"):
+                result["shown"] = result["out"].replace(HOME, "~")
+            return self.send_json(result)
+
         if path == "/api/convert":
             # Hand a .glb that gerak has already written over to Blender, for
             # the formats it cannot write itself.

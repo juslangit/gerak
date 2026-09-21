@@ -110,6 +110,176 @@ def scene_bounds():
 # the jobs
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# building a skeleton onto a model that has none
+# --------------------------------------------------------------------------
+
+def to_blender(p):
+    """glTF coordinates into Blender's.
+
+    A .glb is Y-up; Blender is Z-up. The importer turns the scene 90 degrees
+    about X on the way in, which sends (x, y, z) to (x, -z, y). Joints are
+    placed in gerak in glTF space, so they get the same turn here and land on
+    the same part of the mesh.
+    """
+    return Vector((p[0], -p[2], p[1]))
+
+
+def meshes_in_scene():
+    return [o for o in bpy.data.objects if o.type == "MESH"]
+
+
+def build_armature(joints, name="gerak_rig"):
+    """Make a real armature out of the joints gerak placed."""
+    data = bpy.data.armatures.new(name)
+    rig = bpy.data.objects.new(name, data)
+    bpy.context.scene.collection.objects.link(rig)
+
+    bpy.context.view_layer.objects.active = rig
+    for obj in bpy.data.objects:
+        obj.select_set(False)
+    rig.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+
+    made = {}
+    for joint in joints:
+        bone = data.edit_bones.new(joint["name"])
+        bone.head = to_blender(joint["head"])
+        bone.tail = to_blender(joint["tail"])
+        # A bone of no length is silently thrown away by Blender, which would
+        # leave a hole in the middle of the chain.
+        if (bone.tail - bone.head).length < 1e-5:
+            bone.tail = bone.head + Vector((0, 0, 1e-3))
+        made[joint["name"]] = bone
+
+    for joint in joints:
+        parent = joint.get("parent")
+        if not parent or parent not in made:
+            continue
+        bone = made[joint["name"]]
+        bone.parent = made[parent]
+        # Connect it only where it really does start at its parent's end,
+        # so a chain moves as a chain and a shoulder stays free to slide.
+        bone.use_connect = (bone.head - made[parent].tail).length < 1e-4
+
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return rig
+
+
+def skin(rig, meshes):
+    """Weight the mesh to the bones.
+
+    Automatic weights solves a little heat-diffusion problem over the surface,
+    which is far better than anything simpler - but it gives up on meshes that
+    are not watertight, and plenty of downloaded models are not. So the
+    failure is caught and envelopes are used instead: cruder, but it always
+    produces something you can pose.
+    """
+    for obj in bpy.data.objects:
+        obj.select_set(False)
+    for mesh in meshes:
+        mesh.select_set(True)
+    rig.select_set(True)
+    bpy.context.view_layer.objects.active = rig
+
+    try:
+        bpy.ops.object.parent_set(type="ARMATURE_AUTO")
+        return "automatic weights"
+    except RuntimeError as err:
+        for mesh in meshes:                     # undo any half-done parenting
+            mesh.parent = None
+            for mod in list(mesh.modifiers):
+                if mod.type == "ARMATURE":
+                    mesh.modifiers.remove(mod)
+        for obj in bpy.data.objects:
+            obj.select_set(False)
+        for mesh in meshes:
+            mesh.select_set(True)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        bpy.ops.object.parent_set(type="ARMATURE_ENVELOPE")
+        return "envelopes (automatic weights would not solve: %s)" % str(err).strip()
+
+
+def count_unweighted(meshes, rig):
+    """Vertices that no bone reached.
+
+    Automatic weights can leave parts of a mesh unclaimed - an eyeball, a
+    loose accessory, anything far from every bone. Those vertices simply do
+    not move when the model is animated, and Blender's glTF exporter quietly
+    parks them on an extra bone called "neutral_bone" rather than complain.
+    Better to count them and say so.
+    """
+    bone_names = {b.name for b in rig.data.bones}
+    stranded = 0
+    total = 0
+    for mesh in meshes:
+        wanted = {g.index for g in mesh.vertex_groups if g.name in bone_names}
+        for vert in mesh.data.vertices:
+            total += 1
+            if not any(g.group in wanted and g.weight > 0 for g in vert.groups):
+                stranded += 1
+    return stranded, total
+
+
+def write_glb(path):
+    bpy.ops.export_scene.gltf(
+        filepath=path,
+        export_format="GLB",
+        export_skins=True,
+        export_animations=True,
+        export_yup=True,
+        use_selection=False,
+    )
+
+
+def do_rig(job):
+    source = job["source"]
+    joints = job["joints"]
+    out = job["out"]
+
+    fresh_scene()
+    ext = os.path.splitext(source)[1].lower()
+    if ext in (".glb", ".gltf"):
+        bpy.ops.import_scene.gltf(filepath=source)
+    elif ext == ".fbx":
+        bpy.ops.import_scene.fbx(filepath=source)
+    elif ext == ".obj":
+        bpy.ops.wm.obj_import(filepath=source)
+    else:
+        raise RuntimeError("gerak cannot rig a %s yet" % ext)
+
+    meshes = meshes_in_scene()
+    if not meshes:
+        raise RuntimeError("there is no mesh in that file to skin")
+
+    # Anything that already had a skeleton loses it: this is a fresh rig.
+    for obj in [o for o in bpy.data.objects if o.type == "ARMATURE"]:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    for mesh in meshes:
+        for mod in list(mesh.modifiers):
+            if mod.type == "ARMATURE":
+                mesh.modifiers.remove(mod)
+        mesh.parent = None
+
+    rig = build_armature(joints, job.get("name") or "gerak_rig")
+    how = skin(rig, meshes)
+    stranded, verts = count_unweighted(meshes, rig)
+    write_glb(out)
+
+    return {
+        "ok": True,
+        "out": out,
+        "bytes": os.path.getsize(out) if os.path.exists(out) else 0,
+        "bones": len(rig.data.bones),
+        "meshes": len(meshes),
+        "weights": how,
+        "vertex_groups": max((len(m.vertex_groups) for m in meshes), default=0),
+        "vertices": verts,
+        "unweighted": stranded,
+    }
+
+
 def write_fbx(path, fps):
     """FBX for Unreal.
 
@@ -246,6 +416,11 @@ def point_at(obj, target):
 
 def main():
     job = read_job()
+
+    if job.get("job") == "rig":
+        report(**do_rig(job))
+        return
+
     source = job["source"]
     out_dir = job.get("out_dir") or os.path.dirname(source)
     name = job.get("name") or os.path.splitext(os.path.basename(source))[0]

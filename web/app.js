@@ -15,6 +15,8 @@ import { GLTFExporter } from 'three/addons/GLTFExporter.js';
 import { Viewport } from '/web/scene.js';
 import { Clip, Player } from '/web/clip.js';
 import { detectLimbs, chainFrom } from '/web/ik.js';
+import { TEMPLATES, TEMPLATE_ORDER, fitTemplate, guessFacing, headsAndTails }
+  from '/web/templates.js';
 
 const $ = (sel) => document.querySelector(sel);
 const TOKEN = window.GERAK_TOKEN;
@@ -43,6 +45,7 @@ const state = {
   bones: [],
   frame: 0,
   chains: [],           // the limbs, each either FK or IK
+  rig: { template: 'biped', facing: 0, flip: false },
 };
 
 const view = new Viewport($('#viewport'));
@@ -154,12 +157,22 @@ async function openModel(item) {
 
     $('#viewport-empty').hidden = true;
     $('#loaded-name').innerHTML =
-      `<strong>${escapeHTML(item.name)}</strong> — ${info.bones.length} joints` +
+      `<strong>${escapeHTML(item.name)}</strong> — ` +
+      (info.bones.length ? `${info.bones.length} joints` : 'no skeleton yet') +
       (info.clips.length ? `, ${info.clips.length} animation${info.clips.length > 1 ? 's' : ''} in the file` : '');
     $('#btn-save').disabled = false;
     $('#btn-export').disabled = false;
 
-    state.chains = detectLimbs(state.bones);
+    const boneless = state.bones.length === 0;
+    showRigPanel(boneless);
+    if (boneless) {
+      setFacing(guessFacing(state.rig.template, view.modelBox()));
+      view.setGizmoMode('translate');
+      document.querySelector('[data-gizmo="translate"]').classList.add('is-on');
+      document.querySelector('[data-gizmo="rotate"]').classList.remove('is-on');
+    }
+
+    state.chains = boneless ? [] : detectLimbs(state.bones);
     renderBoneTree();
     renderLimbs();
     setFrame(0);
@@ -218,7 +231,8 @@ function importSourceClip(source) {
 function renderBoneTree() {
   const tree = $('#bone-tree');
   if (!state.bones.length) {
-    tree.innerHTML = '<p class="hint">This model has no skeleton in it.</p>';
+    tree.innerHTML = '<p class="hint">No skeleton yet — place one above, and '
+      + 'its joints will appear here.</p>';
     return;
   }
 
@@ -253,6 +267,114 @@ function paintBoneTree() {
     el.classList.toggle('has-keys', state.clip.tracks.has(name));
   });
 }
+
+// ── putting a skeleton on a model that has none ─────────────────────
+
+$('#rig-template').innerHTML = TEMPLATE_ORDER
+  .map((key) => `<option value="${key}">${escapeHTML(TEMPLATES[key].label)}</option>`).join('');
+
+function showRigPanel(on) {
+  $('#rig-box').hidden = !on;
+  if (!on) return;
+  $('#rig-template').value = state.rig.template;
+  $('#rig-template-note').textContent = TEMPLATES[state.rig.template].note;
+  $('#btn-bind').hidden = true;
+  $('#rig-status').textContent = '';
+  $('#rig-status').className = 'rig-note';
+  setFacing(state.rig.facing);
+}
+
+function setFacing(deg) {
+  state.rig.facing = deg;
+  $('#rig-facing').querySelectorAll('[data-facing]').forEach((b) =>
+    b.classList.toggle('is-on', +b.dataset.facing === deg));
+}
+
+$('#rig-template').onchange = (e) => {
+  state.rig.template = e.target.value;
+  $('#rig-template-note').textContent = TEMPLATES[state.rig.template].note;
+  if (state.model) setFacing(guessFacing(state.rig.template, view.modelBox()));
+  if (view.hasDraft) placeSkeleton();
+};
+$('#rig-facing').querySelectorAll('[data-facing]').forEach((btn) => {
+  btn.onclick = () => { setFacing(+btn.dataset.facing); if (view.hasDraft) placeSkeleton(); };
+});
+$('#rig-flip').onchange = (e) => {
+  state.rig.flip = e.target.checked;
+  if (view.hasDraft) placeSkeleton();
+};
+
+function placeSkeleton() {
+  const placed = fitTemplate(
+    state.rig.template, view.modelBox(), state.rig.facing, state.rig.flip);
+  const bones = view.buildDraft(placed);
+  state.bones = bones;
+  state.chains = [];
+  renderLimbs();
+  renderBoneTree();
+  renderTracks();
+  $('#btn-bind').hidden = false;
+  $('#rig-status').className = 'rig-note';
+  $('#rig-status').textContent =
+    `${bones.length} joints placed. Drag any of them onto the right part of the `
+    + 'model — the joints below a joint come with it — then bind.';
+  toast(`${TEMPLATES[state.rig.template].label} skeleton placed — nudge the joints, then bind.`);
+}
+
+$('#btn-place').onclick = () => {
+  if (!state.model) return;
+  placeSkeleton();
+};
+
+$('#btn-bind').onclick = async () => {
+  if (!view.hasDraft) return;
+  const btn = $('#btn-bind');
+  const status = $('#rig-status');
+  btn.disabled = true;
+  btn.textContent = 'Blender is binding…';
+  status.className = 'rig-note';
+  status.textContent = 'Working out which part of the skin each bone moves. '
+    + 'This takes a few seconds.';
+
+  try {
+    const joints = headsAndTails(view.draftJoints());
+    const result = await api('/api/rig', {
+      source: state.model.path,
+      joints,
+      name: state.model.name.replace(/\.\w+$/, ''),
+    });
+    if (!result.ok) throw new Error((result.problems || ['Blender failed']).join('; '));
+
+    const stranded = result.unweighted
+      ? `\n${result.unweighted} of ${result.vertices} vertices were not reached by any bone `
+        + '— those parts will not move. Move a joint closer and bind again if that matters.'
+      : '';
+    status.className = 'rig-note is-good';
+    status.textContent = `Bound with ${result.weights}. ${result.bones} bones, `
+      + `${result.vertices} vertices.${stranded}`;
+
+    // Open the rigged copy. The original file is never touched.
+    view.clearDraft();
+    await openModel({
+      path: result.out,
+      name: result.out.split('/').pop(),
+      folder: result.shown.replace(/\/[^/]+$/, ''),
+      ext: 'glb',
+      size: result.bytes,
+      rigged: true,
+      joints: result.bones,
+      anims: 0,
+    });
+    toast(`Rigged — ${result.bones} bones. Click a joint and start posing.`);
+    loadLibrary(true);
+  } catch (err) {
+    status.className = 'rig-note is-bad';
+    status.textContent = `Could not bind: ${err.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Bind the skin to it';
+  }
+};
 
 // ── limbs: FK or IK ─────────────────────────────────────────────────
 
@@ -937,6 +1059,7 @@ window.gerak = {
   state, view, player, api,
   openModel, keyPose, setFrame, renderTracks,
   renderLimbs, setChainMode, togglePin, applyPins,
+  placeSkeleton, showRigPanel, setFacing,
 };
 
 // ── go ──────────────────────────────────────────────────────────────
