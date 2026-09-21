@@ -32,6 +32,7 @@ export class Viewport {
     this.sourceClips = [];         // animations that were already in the file
     this.onSelect = () => {};
     this.onJointChanged = () => {};
+    this.onDragStart = () => {};
     this.onDragEnd = () => {};
     this.onHandleMoved = () => {};
     this.onHandleDropped = () => {};
@@ -117,7 +118,14 @@ export class Viewport {
     // spins away under your hand.
     this.transform.addEventListener('dragging-changed', (e) => {
       this.orbit.enabled = !e.value;
-      if (e.value) return;
+      if (e.value) {
+        // Said before anything has moved, so undo can photograph the pose
+        // as it was rather than as it ends up.
+        this.onDragStart(this.selectedHandle
+          ? this.selectedHandle.userData.chain
+          : this.selected);
+        return;
+      }
       if (this.selectedHandle) this.onHandleDropped(this.selectedHandle.userData.chain);
       else if (this.selected) this.onDragEnd(this.selected);
     });
@@ -572,6 +580,25 @@ export class Viewport {
   }
 
   get hasDraft() { return !!this.draftRoot; }
+
+  /**
+   * The draft skeleton in the shape `buildDraft` takes, so it can be put
+   * back exactly as it was — which is what undo needs after a different
+   * template has been dropped on top of it.
+   */
+  draftLayout() {
+    if (!this.draftRoot) return null;
+    this.scene.updateMatrixWorld(true);
+    const world = new THREE.Vector3();
+    return this.bones.map((bone) => {
+      bone.getWorldPosition(world);
+      return {
+        name: bone.name,
+        parent: bone.parent && bone.parent.isBone ? bone.parent.name : null,
+        at: world.toArray(),
+      };
+    });
+  }
 
   /** Where every draft joint sits, in the model's own coordinates. */
   draftJoints() {

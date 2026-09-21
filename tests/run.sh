@@ -56,6 +56,12 @@ run "the app, driven like a person" \
 run "the rigging flow, end to end" \
   node tests/run-browser.mjs "$BASE/?t=$TOKEN" tests/rigflow.smoke.mjs
 
+# The rigging suite writes rigged copies into the exports folder. They are
+# test output, not your work, so they do not get to sit in Documents.
+find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'test-*-rigged.glb' -delete 2>/dev/null
+find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'crowd_a_stand-rigged.*' -delete 2>/dev/null
+find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'player.*' -delete 2>/dev/null
+
 echo
 echo "── the macOS app ───────────────────────────────────────────────"
 echo "run tests/native.sh for the app; it builds and launches it, which"

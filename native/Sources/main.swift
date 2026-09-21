@@ -490,9 +490,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate,
         main.addItem(submenu: file, title: "File")
 
         // Edit — the standard one, so copy and paste work in the text fields
+        // Undo and Redo go to gerak's own history, not to AppKit's - the
+        // page is what holds the work, and NSText's undo knows nothing about
+        // a keyframe. They are here rather than in Pose because ⌘Z belongs in
+        // Edit and nowhere else.
         let edit = NSMenu(title: "Edit")
-        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(cmd: "undo", title: "Undo", key: "z", target: self)
+        edit.addItem(cmd: "redo", title: "Redo", key: "Z",
+                     modifiers: [.command, .shift], target: self)
         edit.addItem(.separator())
         edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")

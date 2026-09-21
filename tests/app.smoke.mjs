@@ -97,7 +97,10 @@ try {
   const stood = g.view.camera.position.clone();
   const away = stood.distanceTo(g.view.orbit.target);
   g.view.gizmo.onPick(new (stood.constructor)(1, 0, 0));
-  await wait(600);
+  // Wait for the swing to land rather than for a stopwatch: a headless
+  // window throttles requestAnimationFrame, so a fixed delay is a coin toss.
+  await until('the camera to finish swinging', () => !g.view.swing.running, 8000);
+  await wait(100);
   const swungTo = g.view.camera.position.clone();
   const facing = swungTo.clone().sub(g.view.orbit.target).normalize();
   say(facing.x > 0.999,
@@ -250,6 +253,60 @@ try {
     'with the pin off, the foot travels with the body as it should');
 
   g.setFrame(0);
+
+  // ── undo ──────────────────────────────────────────────────────────
+  const h = g.history;
+  say(h.canUndo, `there is something to undo: ${h.undoLabel}`);
+
+  // A pose that was never keyed is the one undo is most likely to be asked
+  // for, and the one a clip-only history would silently throw away.
+  const loose = g.state.bones.find((b) => !g.state.clip.tracks.has(b.name) && b !== arm);
+  g.view.select(loose);
+  const wasAt = loose.quaternion.clone();
+  g.view.onDragStart(loose);
+  loose.rotation.x += 0.4;
+  say(1 - Math.abs(loose.quaternion.dot(wasAt)) > 1e-6, `turned "${loose.name}" without keying it`);
+  g.undo();
+  say(1 - Math.abs(loose.quaternion.dot(wasAt)) < 1e-9,
+    'undo put a joint back that had been turned but never keyed');
+
+  // And a key
+  const keysBefore = g.state.clip.totalKeys();
+  g.setFrame(33);
+  arm.rotation.z += 0.3;
+  g.keyPose(33);
+  say(g.state.clip.totalKeys() > keysBefore,
+    `keying added ${g.state.clip.totalKeys() - keysBefore} key(s)`);
+  g.undo();
+  say(g.state.clip.totalKeys() === keysBefore,
+    `undo took them away again (${g.state.clip.totalKeys()} back to ${keysBefore})`);
+  say(h.canRedo, `and redo is offered: ${h.redoLabel}`);
+  g.redo();
+  say(g.state.clip.totalKeys() > keysBefore, 'redo put them back');
+  g.undo();
+
+  // Pressing a key that changes nothing must not leave a step behind.
+  g.setFrame(41);
+  const depth = h.past.length;
+  g.command('unkey');                       // no keys at frame 41
+  say(h.past.length === depth,
+    'removing a key where there is none leaves nothing on the undo stack');
+
+  // The buttons say what they will do.
+  say(!document.querySelector('#btn-undo').disabled, 'the undo button is live');
+  say(/^Undo /.test(document.querySelector('#btn-undo').title),
+    `and names it: "${document.querySelector('#btn-undo').title}"`);
+
+  // Undo everything, then check the stack empties and the button greys out.
+  let guard = 0;
+  while (h.canUndo && guard++ < 60) h.undo();
+  say(!h.canUndo, `undoing everything empties the stack (${guard} steps)`);
+  say(document.querySelector('#btn-undo').disabled, 'and the button greys out');
+
+  // Put the work back for the export test below.
+  guard = 0;
+  while (h.canRedo && guard++ < 60) h.redo();
+  say(g.state.clip.totalKeys() > 0, `redoing it all brings the work back (${g.state.clip.totalKeys()} keys)`);
 
   // ── export: .glb here, the rest through Blender ───────────────────
   const caps = await g.api(`/api/capabilities?t=${encodeURIComponent(window.GERAK_TOKEN)}`);

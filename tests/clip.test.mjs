@@ -301,6 +301,45 @@ test('a clip saved and re-opened is the same clip', () => {
   assert(!back.dirty, 'a freshly opened clip should not be marked unsaved');
 });
 
+test('a saved copy does not change when the clip afterwards does', () => {
+  const clip = new Clip();
+  const v = new THREE.Vector3(0, 1, 0);
+  clip.setKey('Hips', 0, qz(10), v);
+  clip.setKey('Hips', 12, qz(50), v);
+
+  const copy = clip.toJSON();
+  const keysAtSave = copy.tracks.Hips.length;
+  const firstAtSave = copy.tracks.Hips[0].q.slice();
+
+  // Everything that can change a clip, after the copy was taken.
+  clip.setKey('Hips', 24, qz(90), v);
+  clip.setKey('Hips', 0, qz(80), v);
+  clip.shift(5);
+  clip.setKey('LeftArm', 3, qz(20), v);
+
+  assert(copy.tracks.Hips.length === keysAtSave,
+    `the copy grew from ${keysAtSave} to ${copy.tracks.Hips.length} keys`);
+  assert(!copy.tracks.LeftArm, 'a joint keyed later turned up in the copy');
+  assert(copy.tracks.Hips[0].f === 0, `the copy's first key moved to frame ${copy.tracks.Hips[0].f}`);
+  assert(copy.tracks.Hips[0].q.every((v, i) => v === firstAtSave[i]),
+    'the copy\'s first rotation changed underneath it');
+});
+
+test('a clip built from a copy shares nothing with it either', () => {
+  const clip = new Clip();
+  clip.setKey('Hips', 0, qz(10), new THREE.Vector3());
+  const copy = clip.toJSON();
+  const rebuilt = Clip.fromJSON(copy);
+
+  rebuilt.setKey('Hips', 6, qz(40), new THREE.Vector3());
+  rebuilt.shift(3);
+
+  assert(copy.tracks.Hips.length === 1,
+    `the copy grew to ${copy.tracks.Hips.length} keys when the rebuilt clip was edited`);
+  assert(copy.tracks.Hips[0].f === 0,
+    `the copy's key moved to frame ${copy.tracks.Hips[0].f}`);
+});
+
 test('the keyed-frames list is every frame that carries a key, in order', () => {
   const clip = new Clip();
   const v = new THREE.Vector3();

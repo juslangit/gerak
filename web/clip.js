@@ -161,9 +161,20 @@ export class Clip {
 
   // ── saving, loading, exporting ────────────────────────────────────
 
+  /**
+   * A plain, independent copy of this clip.
+   *
+   * Independent matters. Handing back the live arrays is fine for writing a
+   * file, because that is serialised on the spot — but undo photographs a
+   * clip and keeps it, and a photograph that shares its arrays with the clip
+   * changes whenever the clip does. Which makes undo restore the very state
+   * it was meant to undo.
+   */
   toJSON() {
     const tracks = {};
-    for (const [name, track] of this.tracks) tracks[name] = track;
+    for (const [name, track] of this.tracks) {
+      tracks[name] = track.map((key) => ({ f: key.f, q: key.q.slice(), p: key.p.slice() }));
+    }
     return {
       version: 1,
       name: this.name,
@@ -175,10 +186,20 @@ export class Clip {
     };
   }
 
+  /**
+   * Build a clip from a plain object, sharing nothing with it.
+   *
+   * Copying the array alone is not enough: `shift` moves a key by editing its
+   * frame number in place, so a clip that shared its key objects with the
+   * document it was built from would drag that document along with it. Undo
+   * builds clips from photographs, and a photograph that moves is no use.
+   */
   static fromJSON(doc) {
     const clip = new Clip(doc);
     for (const [name, track] of Object.entries(doc.tracks || {})) {
-      clip.tracks.set(name, track.slice().sort((a, b) => a.f - b.f));
+      clip.tracks.set(name, track
+        .map((key) => ({ f: key.f, q: key.q.slice(), p: key.p.slice() }))
+        .sort((a, b) => a.f - b.f));
     }
     clip.dirty = false;
     return clip;

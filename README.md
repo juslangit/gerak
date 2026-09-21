@@ -65,6 +65,10 @@ ring appears.
 Frame 9 between keys at 6 and 12 is worked out on the spot, so you only pose
 the moments that matter.
 
+**Change your mind.** The two arrows beside the Key buttons are undo and
+redo, and `⌘Z` does the same. Hover one and it names what it will undo —
+"Undo turning LeftArm", "Undo keying frame 12".
+
 **Play it.** Space bar. Loop is on by default.
 
 **Know which way round you are.** The floor is a proper grid — fine squares
@@ -114,6 +118,7 @@ what you get is exactly what the file did.
 
 | Key | What it does |
 |---|---|
+| `⌘Z` / `⇧⌘Z` | Undo / redo |
 | `K` | Key the pose at this frame |
 | `Space` | Play / pause |
 | `←` `→` | One frame back / forward (hold `Shift` for ten) |
@@ -275,3 +280,23 @@ that is what the files it opens and writes actually contain. Blender is Z-up
 and converts on the way in and out. The widget names the axes the model really
 has rather than the ones Blender would call them — otherwise moving a joint
 "up the Z axis" would move it the wrong way.
+
+## What undo remembers
+
+Undo works by photographing the state before each action rather than by
+teaching every action how to reverse itself. The second way is cheaper and is
+wrong the first time somebody adds an action and forgets the reverse; this way
+is duller and much harder to get wrong. A clip is a few hundred numbers and a
+pose is one rotation per joint, so a photograph is cheap. Forty of them are
+kept, and a new model starts a new stack.
+
+Each photograph holds **the clip, the pose the joints are actually in, and —
+while a skeleton is being placed — where its joints sit.** The pose is in
+there as well as the clip because you can turn a joint without keying it, and
+that is exactly the pose you are most likely to want back.
+
+It does not remember the camera, what is selected in the list, or which panels
+are open. Undo should put the work back, not the furniture.
+
+Steps are only recorded when something really changes, so pressing Delete on a
+frame with no keys does not leave a step you then have to undo past.

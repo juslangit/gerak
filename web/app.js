@@ -17,6 +17,7 @@ import { Clip, Player } from '/web/clip.js';
 import { detectLimbs, chainFrom } from '/web/ik.js';
 import { TEMPLATES, TEMPLATE_ORDER, fitTemplate, guessFacing, headsAndTails }
   from '/web/templates.js';
+import { History } from '/web/history.js';
 
 const $ = (sel) => document.querySelector(sel);
 const TOKEN = window.GERAK_TOKEN;
@@ -59,6 +60,103 @@ const state = {
 
 const view = new Viewport($('#viewport'));
 const player = new Player((f) => setFrame(f, true));
+
+/* Undo.
+ *
+ * What is worth photographing is the clip, the pose the joints are actually
+ * in, and — while a skeleton is being placed — where its joints sit. Not the
+ * camera, not what is selected in the list, not which panels are open: undo
+ * should put the work back, not the furniture.
+ *
+ * The pose is stored as well as the clip because you can turn a joint without
+ * keying it. Restoring only the clip would quietly throw that away, which is
+ * exactly the pose a person is most likely to want back.
+ */
+
+function photograph() {
+  return {
+    clip: state.clip.toJSON(),
+    frame: state.frame,
+    pose: state.bones.map((bone) => ({
+      n: bone.name,
+      q: bone.quaternion.toArray(),
+      p: bone.position.toArray(),
+    })),
+    draft: view.hasDraft ? view.draftLayout() : null,
+    selected: view.selected ? view.selected.name : null,
+  };
+}
+
+function putBack(shot) {
+  // The skeleton itself first: a different template may have been dropped on
+  // top since, and the joints have to exist before they can be posed.
+  const sameSkeleton = shot.draft && view.hasDraft
+    && view.bones.length === shot.draft.length
+    && view.bones.every((bone, i) => bone.name === shot.draft[i].name);
+
+  if (shot.draft && !sameSkeleton) {
+    state.bones = view.buildDraft(shot.draft);
+    state.chains = [];
+    renderLimbs();
+  } else if (!shot.draft && view.hasDraft) {
+    view.clearDraft();
+    state.bones = [];
+    state.chains = [];
+    renderLimbs();
+  }
+
+  state.clip = Clip.fromJSON(shot.clip);
+  state.clip.dirty = true;
+  $('#length-field').value = state.clip.frames;
+  $('#fps-field').value = state.clip.fps;
+
+  // setFrame poses the joints from the clip; the photograph then overwrites
+  // that with the exact pose, which is what a joint turned but never keyed
+  // needs in order to come back.
+  setFrame(shot.frame);
+  const byName = new Map(state.bones.map((bone) => [bone.name, bone]));
+  for (const posed of shot.pose) {
+    const bone = byName.get(posed.n);
+    if (!bone) continue;
+    bone.quaternion.fromArray(posed.q);
+    bone.position.fromArray(posed.p);
+  }
+
+  view.scene.updateMatrixWorld(true);
+  refreshChains();
+  if (shot.selected) view.selectByName(shot.selected); else view.select(null);
+  renderBoneTree();
+  renderTracks();
+  refreshRotationFields();
+  updateReadout();
+  markDirty();
+}
+
+const history = new History(photograph, putBack);
+
+/** Say what will happen if undo is pressed, and grey it out when nothing will. */
+function paintHistory() {
+  const undo = $('#btn-undo');
+  const redo = $('#btn-redo');
+  undo.disabled = !history.canUndo;
+  redo.disabled = !history.canRedo;
+  undo.title = history.canUndo ? `Undo ${history.undoLabel}` : 'Nothing to undo';
+  redo.title = history.canRedo ? `Redo ${history.redoLabel}` : 'Nothing to redo';
+}
+history.onChange = paintHistory;
+
+function undo() {
+  const what = history.undo();
+  toast(what ? `Undid ${what}.` : 'Nothing to undo.');
+}
+
+function redo() {
+  const what = history.redo();
+  toast(what ? `Redid ${what}.` : 'Nothing to redo.');
+}
+
+$('#btn-undo').onclick = undo;
+$('#btn-redo').onclick = redo;
 
 // ── little helpers ──────────────────────────────────────────────────
 
@@ -195,6 +293,7 @@ async function openModel(item) {
       document.querySelector('[data-gizmo="rotate"]').classList.remove('is-on');
     }
 
+    history.clear();
     state.chains = boneless ? [] : detectLimbs(state.bones);
     renderBoneTree();
     renderLimbs();
@@ -239,6 +338,7 @@ function offerSourceClips(clips) {
 }
 
 function importSourceClip(source) {
+  history.push(`loading "${source.name}"`);
   const fps = +$('#fps-field').value || 24;
   const imported = Clip.fromAnimationClip(source, state.bones, view.restPose, fps);
   imported.model = state.model.path;
@@ -364,6 +464,7 @@ $('#rig-flip').onchange = (e) => {
 };
 
 function placeSkeleton() {
+  history.push(view.hasDraft ? 'placing a different skeleton' : 'placing a skeleton');
   const placed = fitTemplate(
     state.rig.template, view.modelBox(), state.rig.facing, state.rig.flip);
   const bones = view.buildDraft(placed);
@@ -566,6 +667,11 @@ view.onSelect = (bone) => {
 };
 
 // Dragging the ring writes a key the moment you let go, if auto-key is on.
+view.onDragStart = (what) => {
+  if (!what) return;
+  history.push(what.bones ? `moving ${what.label}` : `turning ${prettyBone(what.name)}`);
+};
+
 view.onDragEnd = (bone) => {
   const alsoMoved = applyPins();
   if ($('#chk-autokey').checked) keyBones([bone, ...alsoMoved], state.frame);
@@ -588,6 +694,9 @@ function refreshRotationFields() {
 }
 
 $('#rot-grid').querySelectorAll('input').forEach((input) => {
+  input.addEventListener('focus', () => {
+    if (view.selected) history.push(`turning ${prettyBone(view.selected.name)}`);
+  });
   input.addEventListener('input', () => {
     const bone = view.selected;
     if (!bone) return;
@@ -636,40 +745,53 @@ function keyBones(bones, frame) {
 /** Key every joint that has moved away from the pose the file arrived in. */
 function keyPose(frame = state.frame) {
   if (!state.bones.length) return;
-  let n = 0;
-  for (const bone of state.bones) {
+
+  // Work out what would be keyed before keying any of it, so that a press
+  // that changes nothing does not leave a dead step on the undo stack.
+  const keying = state.bones.filter((bone) => {
     const rest = view.restPose.get(bone.name);
-    const moved = !rest ||
-      Math.abs(bone.quaternion.dot(rest.q)) < 0.999999 ||
-      bone.position.distanceToSquared(rest.p) > 1e-12;
+    const moved = !rest
+      || Math.abs(bone.quaternion.dot(rest.q)) < 0.999999
+      || bone.position.distanceToSquared(rest.p) > 1e-12;
     // Already-keyed joints are re-keyed too, so a pose is stored whole and
     // does not half-change when you scrub back to it.
-    if (moved || state.clip.tracks.has(bone.name)) {
-      state.clip.setKey(bone.name, frame, bone.quaternion, bone.position);
-      n++;
-    }
+    return moved || state.clip.tracks.has(bone.name);
+  });
+
+  if (!keying.length) { toast('Nothing has moved yet — turn a joint first.'); return; }
+
+  history.push(`keying frame ${Math.round(frame)}`);
+  for (const bone of keying) {
+    state.clip.setKey(bone.name, frame, bone.quaternion, bone.position);
   }
-  if (!n) { toast('Nothing has moved yet — turn a joint first.'); return; }
   renderTracks();
   paintBoneTree();
   markDirty();
-  toast(`Keyed ${n} joint${n === 1 ? '' : 's'} at frame ${Math.round(frame)}.`);
+  toast(`Keyed ${keying.length} joint${keying.length === 1 ? '' : 's'} at frame ${Math.round(frame)}.`);
 }
 
 function removeKeyHere() {
   const bone = view.selected;
   const frame = Math.round(state.frame);
-  if (bone) {
-    if (state.clip.removeKey(bone.name, frame)) {
-      toast(`Removed the key on ${prettyBone(bone.name)} at frame ${frame}.`);
-    } else {
-      toast('No key on that joint at this frame.');
-    }
-  } else {
-    let n = 0;
-    for (const name of state.clip.keyedNames()) if (state.clip.removeKey(name, frame)) n++;
-    toast(n ? `Removed ${n} key${n === 1 ? '' : 's'} at frame ${frame}.` : 'No keys at this frame.');
+
+  // Same again: find the keys first, so pressing Delete on a frame with none
+  // does not become a step you have to undo past.
+  const names = bone
+    ? (state.clip.hasKey(bone.name, frame) ? [bone.name] : [])
+    : state.clip.keyedNames().filter((name) => state.clip.hasKey(name, frame));
+
+  if (!names.length) {
+    toast(bone ? 'No key on that joint at this frame.' : 'No keys at this frame.');
+    return;
   }
+
+  history.push(`removing ${names.length === 1 ? 'a key' : names.length + ' keys'} at frame ${frame}`);
+  for (const name of names) state.clip.removeKey(name, frame);
+
+  toast(names.length === 1 && bone
+    ? `Removed the key on ${prettyBone(names[0])} at frame ${frame}.`
+    : `Removed ${names.length} key${names.length === 1 ? '' : 's'} at frame ${frame}.`);
+
   setFrame(state.frame);
   renderTracks();
   paintBoneTree();
@@ -818,11 +940,13 @@ $('#frame-field').oninput = (e) => {
   const f = Math.max(0, Math.min(state.clip.frames, +e.target.value || 0));
   setFrame(f);
 };
+$('#length-field').onfocus = () => history.push('changing the clip length');
 $('#length-field').oninput = (e) => {
   state.clip.frames = Math.max(1, +e.target.value || 48);
   markDirty();
   renderTracks();
 };
+$('#fps-field').onfocus = () => history.push('changing the frame rate');
 $('#fps-field').oninput = (e) => {
   state.clip.fps = Math.max(1, Math.min(120, +e.target.value || 24));
   markDirty();
@@ -837,6 +961,7 @@ $('#btn-reset-joint').onclick = () => {
   if (!bone) return;
   const rest = view.restPose.get(bone.name);
   if (!rest) return;
+  history.push(`resetting ${prettyBone(bone.name)}`);
   bone.quaternion.copy(rest.q);
   bone.position.copy(rest.p);
   if ($('#chk-autokey').checked) keyBone(bone, state.frame);
@@ -855,6 +980,7 @@ $('#btn-mirror').onclick = () => {
   const other = mirrorName(bone.name);
   const target = state.bones.find((b) => b.name === other);
   if (!target) { toast(`No opposite joint found for ${prettyBone(bone.name)}.`, true); return; }
+  history.push(`mirroring onto ${prettyBone(other)}`);
   const q = bone.quaternion;
   target.quaternion.set(q.x, -q.y, -q.z, q.w);
   if ($('#chk-autokey').checked) keyBone(target, state.frame);
@@ -1047,6 +1173,7 @@ async function openClip(meta) {
     await openModel(item);
   }
 
+  history.push(`opening the clip "${meta.name}"`);
   state.clip = Clip.fromJSON(doc);
   $('#fps-field').value = state.clip.fps;
   $('#length-field').value = state.clip.frames;
@@ -1095,6 +1222,11 @@ window.addEventListener('keydown', (e) => {
   const step = e.shiftKey ? 10 : 1;
   switch (e.key) {
     case ' ': e.preventDefault(); $('#tp-play').click(); break;
+    case 'z': case 'Z':
+      if (!(e.metaKey || e.ctrlKey)) break;
+      e.preventDefault();
+      e.shiftKey ? redo() : undo();
+      break;
     case 'k': case 'K': keyPose(); break;
     case 'r': case 'R': document.querySelector('[data-gizmo="rotate"]').click(); break;
     case 'g': case 'G': document.querySelector('[data-gizmo="translate"]').click(); break;
@@ -1119,6 +1251,8 @@ window.addEventListener('beforeunload', (e) => {
  * implementation of each action and the menu is only another way of reaching
  * it. Anything the menu cannot do, the page cannot do either. */
 const COMMANDS = {
+  undo,
+  redo,
   save: () => $('#btn-save').click(),
   export: () => { $('#export-pop').hidden = false; $('#btn-export-go').focus(); },
   exportNow: () => $('#btn-export-go').click(),
@@ -1151,6 +1285,7 @@ function command(name) {
 
 window.gerak = {
   state, view, player, api, command, openPath, native: NATIVE,
+  history, undo, redo,
   openModel, keyPose, setFrame, renderTracks, loadLibrary,
   renderLimbs, setChainMode, togglePin, applyPins,
   placeSkeleton, showRigPanel, setFacing,
@@ -1175,6 +1310,7 @@ async function reopenLast() {
   } catch { /* it has moved or gone; leave the list showing */ }
 }
 
+paintHistory();
 loadLibrary().then(reopenLast);
 loadClips();
 renderRuler();

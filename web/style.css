@@ -901,3 +901,24 @@ kbd {
   z-index: 101;
 }
 .drop-hint[hidden] { display: none; }
+
+/* ── undo and redo ────────────────────────────────────────────────── */
+
+.tp-history {
+  width: 42px;
+  height: 38px;
+  font-size: 1.32rem;
+  font-weight: 500;
+  line-height: 1;
+  margin-right: 0;
+  padding-bottom: 3px;
+}
+.tp-history:disabled {
+  opacity: .32;
+  cursor: default;
+  color: var(--ink-faint);
+  background: var(--bg-raised);
+}
+.tp-history:not(:disabled) { color: var(--ink); }
+#btn-undo { margin-left: 6px; }
+#btn-redo { margin-right: 6px; }
