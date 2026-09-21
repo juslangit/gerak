@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>gerak — pipeline test</title>
+<script type="importmap">
+{ "imports": { "three": "/web/vendor/three.module.js", "three/addons/": "/web/vendor/" } }
+</script>
+<style>
+ body { font: 14px ui-monospace, monospace; background:#16181d; color:#e7e9ee; padding:24px; }
+ .ok   { color:#35c08a; } .bad { color:#ef6461; } h1 { font-size:16px; }
+</style>
+</head>
+<body>
+<h1>gerak — the round trip</h1>
+<pre id="out">running…</pre>
+
+<script type="module">
+/* The whole job of gerak in one run, against a real model off the disk:
+ *
+ *   read a .glb  →  find its bones  →  turn some  →  key them
+ *   →  write a new .glb  →  read that back  →  is the animation in there?
+ *
+ * This is the one test that cannot be faked with a made-up skeleton, because
+ * the thing being checked is whether a real Meshy rig, with the bone names
+ * and the nesting it actually has, survives the trip out and back.
+ */
+
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/GLTFLoader.js';
+import { GLTFExporter } from 'three/addons/GLTFExporter.js';
+import { Clip } from '/web/clip.js';
+
+const out = document.getElementById('out');
+const lines = [];
+let failed = 0;
+
+// The test runner drives this page from outside and waits on this promise,
+// so the result is reported when the work is actually finished rather than
+// when the page happens to have loaded.
+let finish;
+window.__done = new Promise((r) => { finish = r; });
+
+const say = (ok, msg) => {
+  lines.push(`<span class="${ok ? 'ok' : 'bad'}">${ok ? '  ok  ' : ' FAIL '}</span>${msg}`);
+  if (!ok) failed++;
+  out.innerHTML = lines.join('\n');
+};
+const check = (cond, msg) => say(!!cond, msg);
+
+const params = new URLSearchParams(location.search);
+const token = params.get('t');
+const modelPath = params.get('model');
+
+function boneList(scene) {
+  const seen = new Set(), bones = [];
+  scene.traverse((o) => {
+    if (o.isSkinnedMesh) {
+      for (const b of o.skeleton.bones) if (!seen.has(b.uuid)) { seen.add(b.uuid); bones.push(b); }
+    }
+  });
+  return bones;
+}
+
+const qz = (deg) => new THREE.Quaternion()
+  .setFromAxisAngle(new THREE.Vector3(0, 0, 1), THREE.MathUtils.degToRad(deg));
+
+try {
+  // ── 1. read a real model off the disk ────────────────────────────
+  const res = await fetch(`/api/model?t=${encodeURIComponent(token)}&path=${encodeURIComponent(modelPath)}`);
+  const buf = await res.arrayBuffer();
+  say(true, `read ${modelPath.split('/').pop()} — ${(buf.byteLength / 1024).toFixed(0)} KB`);
+
+  const loader = new GLTFLoader();
+  const gltf = await new Promise((ok, no) => loader.parse(buf, '', ok, no));
+  const bones = boneList(gltf.scene);
+  check(bones.length > 0, `found ${bones.length} bones in the file`);
+  say(true, `  first few: ${bones.slice(0, 5).map((b) => b.name).join(', ')}`);
+  check(gltf.animations.length >= 0, `file carries ${gltf.animations.length} animation(s)`);
+
+  const rest = new Map(bones.map((b) => [b.name, { q: b.quaternion.clone(), p: b.position.clone() }]));
+
+  // ── 2. pose three joints and key them, as a person would ─────────
+  const picked = [bones[1], bones[Math.floor(bones.length / 2)], bones[bones.length - 1]]
+    .filter(Boolean);
+  const clip = new Clip({ name: 'roundtrip', fps: 24, frames: 24, model: modelPath });
+
+  for (const bone of picked) clip.setKey(bone.name, 0, bone.quaternion, bone.position);
+  for (const bone of picked) {
+    const turned = bone.quaternion.clone().multiply(qz(35));
+    clip.setKey(bone.name, 12, turned, bone.position);
+  }
+  check(clip.totalKeys() === picked.length * 2,
+    `keyed ${picked.length} joints at frames 0 and 12 (${clip.totalKeys()} keys)`);
+
+  // the pose the timeline claims at frame 6, to compare against later
+  const expected = new Map(picked.map((b) => [b.name, clip.sample(b.name, 6).q.clone()]));
+
+  // ── 3. write a .glb ──────────────────────────────────────────────
+  clip.applyTo(bones, rest, 0);
+  gltf.scene.updateMatrixWorld(true);
+
+  const exporter = new GLTFExporter();
+  const written = await new Promise((ok, no) =>
+    exporter.parse(gltf.scene, ok, no,
+      { binary: true, animations: [clip.toAnimationClip(bones)], onlyVisible: false }));
+  check(written.byteLength > 0, `wrote a new .glb — ${(written.byteLength / 1024).toFixed(0)} KB`);
+
+  // ── 4. read it back and see whether the motion is really there ───
+  const again = await new Promise((ok, no) => loader.parse(written, '', ok, no));
+  check(again.animations.length === 1,
+    `the exported file contains ${again.animations.length} animation (expected 1)`);
+
+  const baked = again.animations[0];
+  check(Math.abs(baked.duration - 1) < 0.01,
+    `it is ${baked.duration.toFixed(3)}s long — 24 frames at 24fps`);
+  check(baked.tracks.length >= picked.length,
+    `it has ${baked.tracks.length} tracks for ${picked.length} posed joints`);
+
+  // Play the re-read file to frame 6 and compare with what the timeline said.
+  const bones2 = boneList(again.scene);
+  const mixer = new THREE.AnimationMixer(again.scene);
+  mixer.clipAction(baked).play();
+  mixer.update(6 / 24);
+  again.scene.updateMatrixWorld(true);
+
+  let worst = 0, worstName = '';
+  for (const [name, want] of expected) {
+    const bone = bones2.find((b) => b.name === name);
+    if (!bone) { say(false, `joint ${name} is missing from the exported file`); continue; }
+    const dot = Math.abs(bone.quaternion.dot(want));
+    const off = 1 - dot;
+    if (off > worst) { worst = off; worstName = name; }
+  }
+  check(worst < 1e-3,
+    `frame 6 in the exported file matches the timeline (worst joint "${worstName}", off by ${worst.toExponential(1)})`);
+
+  // ── 5. the skin must still be attached to the skeleton ───────────
+  const skins = [];
+  again.scene.traverse((o) => { if (o.isSkinnedMesh) skins.push(o); });
+  check(skins.length > 0, `the exported file still has ${skins.length} skinned mesh(es)`);
+  check(skins.every((s) => s.skeleton && s.skeleton.bones.length === bones.length),
+    `every skinned mesh still carries all ${bones.length} bones`);
+
+} catch (err) {
+  say(false, `threw: ${err && err.message ? err.message : err}`);
+  console.error(err);
+}
+
+lines.push('');
+lines.push(failed ? `<span class="bad">${failed} failed</span>` : '<span class="ok">all good</span>');
+out.innerHTML = lines.join('\n');
+document.title = failed ? `FAILED ${failed}` : 'PASSED';
+finish({ failed, text: lines.join('\n').replace(/<[^>]+>/g, '') });
+</script>
+</body>
+</html>

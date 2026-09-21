@@ -1,0 +1,748 @@
+/* gerak - the app.
+ *
+ * This file is the wiring. The three pieces it joins together are:
+ *
+ *   scene.js   what you see and click - the model, its joints, the ring
+ *   clip.js    what you author - keys at frames, and the poses between them
+ *   server.py  what is on the disk - your models, your saved clips
+ *
+ * It holds no 3D maths and no animation maths of its own. When something here
+ * looks like it is doing real work, it is calling one of those three.
+ */
+
+import * as THREE from 'three';
+import { GLTFExporter } from 'three/addons/GLTFExporter.js';
+import { Viewport } from '/web/scene.js';
+import { Clip, Player } from '/web/clip.js';
+
+const $ = (sel) => document.querySelector(sel);
+const TOKEN = window.GERAK_TOKEN;
+
+// ── talking to the server ───────────────────────────────────────────
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'X-Gerak-Token': TOKEN, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+  return res.json();
+}
+
+const modelURL = (path) =>
+  `/api/model?t=${encodeURIComponent(TOKEN)}&path=${encodeURIComponent(path)}`;
+
+// ── the app's whole state, in one place ─────────────────────────────
+
+const state = {
+  library: [],
+  clip: new Clip(),
+  model: null,          // the library row that is open
+  bones: [],
+  frame: 0,
+  pinned: new Set(),
+};
+
+const view = new Viewport($('#viewport'));
+const player = new Player((f) => setFrame(f, true));
+
+// ── little helpers ──────────────────────────────────────────────────
+
+let toastTimer = null;
+function toast(msg, bad = false) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.toggle('is-bad', bad);
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, bad ? 5200 : 2600);
+}
+
+const kb = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
+
+/* Meshy and Blender rigs use different spellings for the same bone. This makes
+ * "LeftArm", "arm.L", "Bip01_L_UpperArm" and "hand_l" all readable at a glance
+ * without losing which side they are on. */
+function prettyBone(name) {
+  return name
+    .replace(/^(mixamorig|Bip\d*|Armature)[:_|]?/i, '')
+    .replace(/[_.]/g, ' ')
+    .replace(/\b(l|left)\b/i, 'L')
+    .replace(/\b(r|right)\b/i, 'R')
+    .trim() || name;
+}
+
+// ── the library ─────────────────────────────────────────────────────
+
+async function loadLibrary(refresh = false) {
+  const btn = $('#btn-rescan');
+  btn.classList.add('is-spinning');
+  try {
+    const { items } = await api(`/api/library?t=${encodeURIComponent(TOKEN)}${refresh ? '&refresh=1' : ''}`);
+    state.library = items;
+    renderLibrary();
+  } catch (err) {
+    $('#library-list').innerHTML = `<p class="hint">Could not read the library: ${err.message}</p>`;
+  } finally {
+    btn.classList.remove('is-spinning');
+  }
+}
+
+function renderLibrary() {
+  const q = $('#library-search').value.trim().toLowerCase();
+  const onlyRigged = $('#only-rigged').checked;
+  const list = $('#library-list');
+
+  let items = state.library;
+  if (onlyRigged) items = items.filter((i) => i.rigged);
+  if (q) items = items.filter((i) =>
+    i.name.toLowerCase().includes(q) || i.folder.toLowerCase().includes(q));
+
+  if (!items.length) {
+    list.innerHTML = `<p class="hint">${onlyRigged
+      ? 'No model here has a skeleton in it yet. Untick the box to see everything — placing joints on a bare model comes next.'
+      : 'Nothing matched.'}</p>`;
+    return;
+  }
+
+  const shown = items.slice(0, 400);
+  list.innerHTML = shown.map((item, i) => `
+    <button class="row${state.model && state.model.path === item.path ? ' is-on' : ''}" data-i="${i}">
+      <div class="row-name">${escapeHTML(item.name)}</div>
+      <div class="row-meta">${escapeHTML(item.folder.replace('~/Desktop/project/', ''))}</div>
+      <div class="row-tags">
+        ${item.rigged ? `<span class="tag tag-rig">${item.joints} joints</span>` : ''}
+        ${item.anims ? `<span class="tag tag-anim">${item.anims} animation${item.anims > 1 ? 's' : ''}</span>` : ''}
+        <span class="tag">${item.ext}</span>
+        <span class="tag">${kb(item.size)}</span>
+      </div>
+    </button>`).join('') +
+    (items.length > shown.length
+      ? `<p class="hint">${items.length - shown.length} more — narrow it with the search box.</p>` : '');
+
+  list.querySelectorAll('.row').forEach((row) => {
+    row.onclick = () => openModel(shown[+row.dataset.i]);
+  });
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ── opening a model ─────────────────────────────────────────────────
+
+async function openModel(item) {
+  if (state.clip.dirty && !confirm('This clip has unsaved changes. Open another model anyway?')) return;
+
+  toast(`Opening ${item.name}…`);
+  player.pause();
+
+  try {
+    const info = await view.load(modelURL(item.path));
+    state.model = item;
+    state.bones = info.bones;
+    state.pinned.clear();
+    state.clip = new Clip({
+      name: item.name.replace(/\.(glb|gltf|fbx)$/i, ''),
+      model: item.path,
+      fps: +$('#fps-field').value || 24,
+      frames: +$('#length-field').value || 48,
+    });
+
+    $('#viewport-empty').hidden = true;
+    $('#loaded-name').innerHTML =
+      `<strong>${escapeHTML(item.name)}</strong> — ${info.bones.length} joints` +
+      (info.clips.length ? `, ${info.clips.length} animation${info.clips.length > 1 ? 's' : ''} in the file` : '');
+    $('#btn-save').disabled = false;
+    $('#btn-export').disabled = false;
+
+    renderBoneTree();
+    setFrame(0);
+    renderTracks();
+    offerSourceClips(info.clips);
+
+    toast(`${item.name} is open — click a joint to start.`);
+  } catch (err) {
+    console.error(err);
+    toast(`Could not open ${item.name}: ${err.message}`, true);
+  }
+  renderLibrary();
+}
+
+/* A Meshy model often arrives with a walk and a run already inside it. Rather
+ * than ignore them, offer to turn one into editable keys - it is far quicker
+ * to fix someone else's walk than to pose one from a T-pose. */
+function offerSourceClips(clips) {
+  if (!clips.length) return;
+  const names = clips.map((c) => c.name);
+  const pick = names.length === 1 ? names[0] : null;
+  const msg = pick
+    ? `This file already contains "${pick}". Load it as editable keys?`
+    : `This file contains ${names.length} animations. Load one as editable keys?\n\n` +
+      names.map((n, i) => `${i + 1}. ${n}`).join('\n') +
+      `\n\nType a number, or cancel.`;
+
+  setTimeout(() => {
+    let chosen = null;
+    if (pick) { if (confirm(msg)) chosen = clips[0]; }
+    else {
+      const answer = prompt(msg, '1');
+      const i = parseInt(answer, 10) - 1;
+      if (i >= 0 && i < clips.length) chosen = clips[i];
+    }
+    if (!chosen) return;
+    importSourceClip(chosen);
+  }, 400);
+}
+
+function importSourceClip(source) {
+  const fps = +$('#fps-field').value || 24;
+  const imported = Clip.fromAnimationClip(source, state.bones, view.restPose, fps);
+  imported.model = state.model.path;
+  imported.name = `${state.model.name.replace(/\.\w+$/, '')}-${source.name}`;
+  state.clip = imported;
+  $('#length-field').value = imported.frames;
+  setFrame(0);
+  renderBoneTree();
+  renderTracks();
+  toast(`Loaded "${source.name}" — ${imported.totalKeys()} keys on ${imported.tracks.size} joints. Edit any of them.`);
+}
+
+// ── the joint tree ──────────────────────────────────────────────────
+
+function renderBoneTree() {
+  const tree = $('#bone-tree');
+  if (!state.bones.length) {
+    tree.innerHTML = '<p class="hint">This model has no skeleton in it.</p>';
+    return;
+  }
+
+  // Lay the bones out as the tree they really are, so a hand reads as living
+  // under an arm rather than as one more name in a flat list.
+  const boneSet = new Set(state.bones);
+  const rows = [];
+  const walk = (bone, depth) => {
+    rows.push({ bone, depth });
+    for (const child of bone.children) if (boneSet.has(child)) walk(child, depth + 1);
+  };
+  for (const bone of state.bones) if (!boneSet.has(bone.parent)) walk(bone, 0);
+
+  tree.innerHTML = rows.map(({ bone, depth }) => `
+    <button class="bone" data-name="${escapeHTML(bone.name)}"
+            style="padding-left:${10 + depth * 14}px">
+      <span class="bone-dot"></span>
+      <span class="bone-label">${escapeHTML(prettyBone(bone.name))}</span>
+    </button>`).join('');
+
+  tree.querySelectorAll('.bone').forEach((el) => {
+    el.onclick = () => view.selectByName(el.dataset.name);
+  });
+  paintBoneTree();
+}
+
+function paintBoneTree() {
+  const sel = view.selected ? view.selected.name : null;
+  $('#bone-tree').querySelectorAll('.bone').forEach((el) => {
+    const name = el.dataset.name;
+    el.classList.toggle('is-on', name === sel);
+    el.classList.toggle('has-keys', state.clip.tracks.has(name));
+  });
+}
+
+// ── selection ───────────────────────────────────────────────────────
+
+view.onSelect = (bone) => {
+  $('#selected-box').hidden = !bone;
+  if (bone) {
+    $('#selected-name').textContent = prettyBone(bone.name);
+    $('#selected-name').title = bone.name;
+    refreshRotationFields();
+  }
+  paintBoneTree();
+  renderTracks();
+  updateReadout();
+};
+
+// Dragging the ring writes a key the moment you let go, if auto-key is on.
+view.onDragEnd = (bone) => {
+  if ($('#chk-autokey').checked) keyBone(bone, state.frame);
+  refreshRotationFields();
+  updateReadout();
+};
+
+view.onJointChanged = () => { refreshRotationFields(); updateReadout(); };
+
+function refreshRotationFields() {
+  const bone = view.selected;
+  if (!bone) return;
+  const e = new THREE.Euler().setFromQuaternion(bone.quaternion, 'XYZ');
+  const deg = (r) => Math.round(THREE.MathUtils.radToDeg(r) * 10) / 10;
+  $('#rot-grid').querySelectorAll('input').forEach((input) => {
+    if (document.activeElement === input) return;
+    input.value = deg(e[input.dataset.axis]);
+  });
+}
+
+$('#rot-grid').querySelectorAll('input').forEach((input) => {
+  input.addEventListener('input', () => {
+    const bone = view.selected;
+    if (!bone) return;
+    const e = new THREE.Euler(
+      THREE.MathUtils.degToRad(+$('#rot-grid input[data-axis="x"]').value || 0),
+      THREE.MathUtils.degToRad(+$('#rot-grid input[data-axis="y"]').value || 0),
+      THREE.MathUtils.degToRad(+$('#rot-grid input[data-axis="z"]').value || 0),
+      'XYZ');
+    bone.quaternion.setFromEuler(e);
+    if ($('#chk-autokey').checked) keyBone(bone, state.frame);
+    updateReadout();
+  });
+});
+
+function updateReadout() {
+  const bone = view.selected;
+  if (!bone) { $('#readout').textContent = ''; return; }
+  const e = new THREE.Euler().setFromQuaternion(bone.quaternion, 'XYZ');
+  const d = (r) => THREE.MathUtils.radToDeg(r).toFixed(1).padStart(7);
+  const keys = state.clip.keysOf(bone.name).length;
+  $('#readout').textContent =
+    `${prettyBone(bone.name)}\n` +
+    `X ${d(e.x)}°   Y ${d(e.y)}°   Z ${d(e.z)}°\n` +
+    `${keys} key${keys === 1 ? '' : 's'} on this joint`;
+}
+
+// ── keys ────────────────────────────────────────────────────────────
+
+function keyBone(bone, frame) {
+  state.clip.setKey(bone.name, frame, bone.quaternion, bone.position);
+  renderTracks();
+  paintBoneTree();
+  markDirty();
+}
+
+/** Key every joint that has moved away from the pose the file arrived in. */
+function keyPose(frame = state.frame) {
+  if (!state.bones.length) return;
+  let n = 0;
+  for (const bone of state.bones) {
+    const rest = view.restPose.get(bone.name);
+    const moved = !rest ||
+      Math.abs(bone.quaternion.dot(rest.q)) < 0.999999 ||
+      bone.position.distanceToSquared(rest.p) > 1e-12;
+    // Already-keyed joints are re-keyed too, so a pose is stored whole and
+    // does not half-change when you scrub back to it.
+    if (moved || state.clip.tracks.has(bone.name)) {
+      state.clip.setKey(bone.name, frame, bone.quaternion, bone.position);
+      n++;
+    }
+  }
+  if (!n) { toast('Nothing has moved yet — turn a joint first.'); return; }
+  renderTracks();
+  paintBoneTree();
+  markDirty();
+  toast(`Keyed ${n} joint${n === 1 ? '' : 's'} at frame ${Math.round(frame)}.`);
+}
+
+function removeKeyHere() {
+  const bone = view.selected;
+  const frame = Math.round(state.frame);
+  if (bone) {
+    if (state.clip.removeKey(bone.name, frame)) {
+      toast(`Removed the key on ${prettyBone(bone.name)} at frame ${frame}.`);
+    } else {
+      toast('No key on that joint at this frame.');
+    }
+  } else {
+    let n = 0;
+    for (const name of state.clip.keyedNames()) if (state.clip.removeKey(name, frame)) n++;
+    toast(n ? `Removed ${n} key${n === 1 ? '' : 's'} at frame ${frame}.` : 'No keys at this frame.');
+  }
+  setFrame(state.frame);
+  renderTracks();
+  paintBoneTree();
+  markDirty();
+}
+
+function markDirty() {
+  state.clip.dirty = true;
+  $('#btn-save').textContent = 'Save clip •';
+}
+
+// ── the frame, and the timeline ─────────────────────────────────────
+
+function setFrame(frame, fromPlayer = false) {
+  state.frame = frame;
+  if (state.bones.length) state.clip.applyTo(state.bones, view.restPose, frame);
+  if (!fromPlayer) player.frame = frame;
+
+  const shown = Math.round(frame);
+  const field = $('#frame-field');
+  if (document.activeElement !== field) field.value = shown;
+  movePlayhead(frame);
+  if (!player.playing) { refreshRotationFields(); updateReadout(); }
+}
+
+function trackGeometry() {
+  const area = $('#track-area');
+  const pad = 118;                       // room for the joint name on the left
+  const w = area.clientWidth - pad - 24;
+  return { pad, w: Math.max(40, w), frames: Math.max(1, state.clip.frames) };
+}
+
+const frameToX = (f) => {
+  const { pad, w, frames } = trackGeometry();
+  return pad + (f / frames) * w;
+};
+const xToFrame = (x) => {
+  const { pad, w, frames } = trackGeometry();
+  return Math.max(0, Math.min(frames, Math.round(((x - pad) / w) * frames)));
+};
+
+function movePlayhead(frame) {
+  $('#playhead').style.left = `${frameToX(frame)}px`;
+}
+
+function renderRuler() {
+  const { frames } = trackGeometry();
+  // Aim for a tick roughly every 70px, landing on a round number of frames.
+  const approx = Math.max(1, Math.round(frames / Math.max(2, Math.floor(trackGeometry().w / 70))));
+  const step = [1, 2, 5, 10, 12, 24, 25, 50, 100].find((s) => s >= approx) || approx;
+  let html = '';
+  for (let f = 0; f <= frames; f += step) {
+    html += `<div class="tick" style="left:${frameToX(f)}px">${f}</div>`;
+  }
+  $('#ruler').innerHTML = html;
+}
+
+function renderTracks() {
+  renderRuler();
+  const container = $('#tracks');
+  const sel = view.selected ? view.selected.name : null;
+
+  // Show every keyed joint, in skeleton order, plus whatever is selected.
+  const order = new Map(state.bones.map((b, i) => [b.name, i]));
+  const names = state.clip.keyedNames().sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+  if (sel && !names.includes(sel)) names.unshift(sel);
+
+  if (!names.length) {
+    container.innerHTML = `<p class="hint">No keys yet. Turn a joint and press <kbd>K</kbd>, or leave Auto-key on and just pose.</p>`;
+    return;
+  }
+
+  container.innerHTML = names.map((name) => `
+    <div class="track${name === sel ? ' is-on' : ''}" data-name="${escapeHTML(name)}">
+      <span class="track-name">${escapeHTML(prettyBone(name))}</span>
+      ${state.clip.keysOf(name).map((k) =>
+        `<div class="keyd" style="left:${frameToX(k.f)}px" data-f="${k.f}"></div>`).join('')}
+    </div>`).join('');
+
+  container.querySelectorAll('.keyd').forEach((d) => {
+    d.onclick = (e) => {
+      e.stopPropagation();
+      view.selectByName(d.closest('.track').dataset.name);
+      setFrame(+d.dataset.f);
+    };
+  });
+  container.querySelectorAll('.track').forEach((row) => {
+    row.onclick = (e) => {
+      view.selectByName(row.dataset.name);
+      setFrame(xToFrame(e.offsetX + (e.target === row ? 0 : 0)));
+    };
+  });
+  movePlayhead(state.frame);
+}
+
+// Scrubbing: press on the ruler and drag.
+(() => {
+  const ruler = $('#ruler');
+  let scrubbing = false;
+  const scrub = (e) => {
+    const r = $('#track-area').getBoundingClientRect();
+    setFrame(xToFrame(e.clientX - r.left));
+  };
+  ruler.addEventListener('pointerdown', (e) => {
+    scrubbing = true;
+    player.pause();
+    ruler.setPointerCapture(e.pointerId);
+    scrub(e);
+  });
+  ruler.addEventListener('pointermove', (e) => { if (scrubbing) scrub(e); });
+  ruler.addEventListener('pointerup', (e) => {
+    scrubbing = false;
+    ruler.releasePointerCapture(e.pointerId);
+  });
+})();
+
+// ── transport ───────────────────────────────────────────────────────
+
+$('#tp-play').onclick = () => {
+  if (!state.bones.length) return;
+  player.loop = $('#chk-loop').checked;
+  player.toggle(state.clip);
+  $('#tp-play').textContent = player.playing ? '❚❚' : '▶';
+};
+$('#tp-start').onclick = () => setFrame(0);
+$('#tp-end').onclick = () => setFrame(state.clip.frames);
+$('#tp-prev').onclick = () => stepKey(-1);
+$('#tp-next').onclick = () => stepKey(1);
+
+function stepKey(dir) {
+  const frames = view.selected && state.clip.tracks.has(view.selected.name)
+    ? state.clip.keysOf(view.selected.name).map((k) => k.f)
+    : state.clip.keyedFrames();
+  const here = Math.round(state.frame);
+  const next = dir > 0
+    ? frames.find((f) => f > here)
+    : [...frames].reverse().find((f) => f < here);
+  if (next === undefined) { toast(dir > 0 ? 'No key after this one.' : 'No key before this one.'); return; }
+  setFrame(next);
+}
+
+$('#frame-field').oninput = (e) => {
+  const f = Math.max(0, Math.min(state.clip.frames, +e.target.value || 0));
+  setFrame(f);
+};
+$('#length-field').oninput = (e) => {
+  state.clip.frames = Math.max(1, +e.target.value || 48);
+  markDirty();
+  renderTracks();
+};
+$('#fps-field').oninput = (e) => {
+  state.clip.fps = Math.max(1, Math.min(120, +e.target.value || 24));
+  markDirty();
+};
+$('#chk-loop').onchange = (e) => { player.loop = e.target.checked; };
+
+$('#btn-key').onclick = () => keyPose();
+$('#btn-unkey').onclick = () => removeKeyHere();
+
+$('#btn-reset-joint').onclick = () => {
+  const bone = view.selected;
+  if (!bone) return;
+  const rest = view.restPose.get(bone.name);
+  if (!rest) return;
+  bone.quaternion.copy(rest.q);
+  bone.position.copy(rest.p);
+  if ($('#chk-autokey').checked) keyBone(bone, state.frame);
+  refreshRotationFields();
+  updateReadout();
+  toast(`${prettyBone(bone.name)} is back to its rest pose.`);
+};
+
+/* Mirroring. Rigs put the two sides of a body at mirrored positions along X,
+ * so flipping the sign of the Y and Z parts of a rotation is the right answer
+ * for the great majority of them. It is a help, not a guarantee - look at the
+ * result before you key it. */
+$('#btn-mirror').onclick = () => {
+  const bone = view.selected;
+  if (!bone) return;
+  const other = mirrorName(bone.name);
+  const target = state.bones.find((b) => b.name === other);
+  if (!target) { toast(`No opposite joint found for ${prettyBone(bone.name)}.`, true); return; }
+  const q = bone.quaternion;
+  target.quaternion.set(q.x, -q.y, -q.z, q.w);
+  if ($('#chk-autokey').checked) keyBone(target, state.frame);
+  view.select(target);
+  toast(`Mirrored onto ${prettyBone(other)} — check it before keying.`);
+};
+
+function mirrorName(name) {
+  const swaps = [
+    [/(^|[^a-z])Left/i, '$1Right'], [/(^|[^a-z])Right/i, '$1Left'],
+    [/_L$/, '_R'], [/_R$/, '_L'],
+    [/\.L$/, '.R'], [/\.R$/, '.L'],
+    [/_l$/, '_r'], [/_r$/, '_l'],
+  ];
+  for (const [from, to] of swaps) if (from.test(name)) return name.replace(from, to);
+  return name;
+}
+
+// ── saving and exporting ────────────────────────────────────────────
+
+$('#btn-save').onclick = async () => {
+  if (state.clip.isEmpty()) { toast('Nothing to save yet — no keys.'); return; }
+  const name = prompt('Name this clip', state.clip.name);
+  if (!name) return;
+  state.clip.name = name;
+  try {
+    await api('/api/clip/save', state.clip.toJSON());
+    state.clip.dirty = false;
+    $('#btn-save').textContent = 'Save clip';
+    toast(`Saved "${name}".`);
+    loadClips();
+  } catch (err) {
+    toast(`Could not save: ${err.message}`, true);
+  }
+};
+
+$('#btn-export').onclick = async () => {
+  if (state.clip.isEmpty()) { toast('Nothing to export yet — no keys.'); return; }
+  player.pause();
+  const btn = $('#btn-export');
+  btn.disabled = true;
+  btn.textContent = 'Exporting…';
+
+  try {
+    // Export from the rest pose. In a .glb the node transforms are the pose
+    // the model sits in when nothing is playing, so leaving it mid-animation
+    // would bake frame 37 in as the model's actual shape.
+    const wasAt = state.frame;
+    for (const bone of state.bones) {
+      const rest = view.restPose.get(bone.name);
+      if (rest) { bone.quaternion.copy(rest.q); bone.position.copy(rest.p); }
+    }
+    view.scene.updateMatrixWorld(true);
+
+    const animation = state.clip.toAnimationClip(state.bones);
+    const exporter = new GLTFExporter();
+    const buffer = await new Promise((resolve, reject) => {
+      exporter.parse(view.model, resolve, reject, {
+        binary: true,
+        animations: [animation],
+        onlyVisible: false,
+        includeCustomExtensions: false,
+      });
+    });
+
+    setFrame(wasAt);
+
+    const base = `${state.model.name.replace(/\.\w+$/, '')}-${state.clip.name}`;
+    const res = await api('/api/export/save', {
+      name: base,
+      ext: 'glb',
+      data: toBase64(buffer),
+    });
+    toast(`Exported ${res.shown} (${kb(res.bytes)}) — opening it in Finder.`);
+    api('/api/reveal', { path: res.path }).catch(() => {});
+  } catch (err) {
+    console.error(err);
+    toast(`Export failed: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Export';
+  }
+};
+
+function toBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  // In 32k slices: String.fromCharCode on a megabyte-long array blows the
+  // argument limit and throws.
+  for (let i = 0; i < bytes.length; i += 32768) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+  }
+  return btoa(binary);
+}
+
+// ── saved clips ─────────────────────────────────────────────────────
+
+async function loadClips() {
+  try {
+    const { items } = await api(`/api/clips?t=${encodeURIComponent(TOKEN)}`);
+    const list = $('#clip-list');
+    if (!items.length) {
+      list.innerHTML = '<p class="hint">No clips saved yet. Make one and press Save clip.</p>';
+      return;
+    }
+    list.innerHTML = items.map((c, i) => `
+      <button class="row" data-i="${i}">
+        <div class="row-name">${escapeHTML(c.name)}</div>
+        <div class="row-meta">${escapeHTML(c.modelName)}</div>
+        <div class="row-tags">
+          <span class="tag tag-rig">${c.keys} keys</span>
+          <span class="tag">${c.frames} frames</span>
+          <span class="tag">${c.fps} fps</span>
+        </div>
+      </button>`).join('');
+    list.querySelectorAll('.row').forEach((row) => {
+      row.onclick = () => openClip(items[+row.dataset.i]);
+    });
+  } catch { /* the panel just stays empty */ }
+}
+
+async function openClip(meta) {
+  const doc = await api(`/api/clip?t=${encodeURIComponent(TOKEN)}&slug=${encodeURIComponent(meta.slug)}`);
+
+  // Open the model the clip was made on, if it is not already open.
+  if (!state.model || state.model.path !== doc.model) {
+    const item = state.library.find((i) => i.path === doc.model);
+    if (!item) { toast(`The model this clip was made on has moved: ${doc.model}`, true); return; }
+    state.clip = new Clip();     // so openModel does not ask about unsaved work
+    await openModel(item);
+  }
+
+  state.clip = Clip.fromJSON(doc);
+  $('#fps-field').value = state.clip.fps;
+  $('#length-field').value = state.clip.frames;
+  $('#btn-save').textContent = 'Save clip';
+  setFrame(0);
+  renderBoneTree();
+  renderTracks();
+  toast(`Opened "${state.clip.name}" — ${state.clip.totalKeys()} keys.`);
+}
+
+// ── the rest of the chrome ──────────────────────────────────────────
+
+document.querySelectorAll('.tab').forEach((tab) => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('is-on', t === tab));
+    document.querySelectorAll('.tab-body').forEach((b) =>
+      b.classList.toggle('is-on', b.dataset.body === tab.dataset.tab));
+    if (tab.dataset.tab === 'clips') loadClips();
+  };
+});
+
+$('#library-search').oninput = renderLibrary;
+$('#only-rigged').onchange = renderLibrary;
+$('#btn-rescan').onclick = () => loadLibrary(true);
+
+document.querySelectorAll('[data-gizmo]').forEach((btn) => {
+  btn.onclick = () => {
+    document.querySelectorAll('[data-gizmo]').forEach((b) => b.classList.toggle('is-on', b === btn));
+    view.setGizmoMode(btn.dataset.gizmo);
+  };
+});
+
+const toggle = (el, fn) => {
+  el.onclick = () => { el.classList.toggle('is-on'); fn(el.classList.contains('is-on')); };
+};
+toggle($('#toggle-skeleton'), (on) => view.setSkeletonVisible(on));
+toggle($('#toggle-mesh'), (on) => view.setMeshVisible(on));
+toggle($('#toggle-ground'), (on) => view.setGroundVisible(on));
+view.setGroundVisible(false);
+
+window.addEventListener('resize', () => renderTracks());
+
+// ── keyboard ────────────────────────────────────────────────────────
+
+window.addEventListener('keydown', (e) => {
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  const step = e.shiftKey ? 10 : 1;
+  switch (e.key) {
+    case ' ': e.preventDefault(); $('#tp-play').click(); break;
+    case 'k': case 'K': keyPose(); break;
+    case 'r': case 'R': document.querySelector('[data-gizmo="rotate"]').click(); break;
+    case 'g': case 'G': document.querySelector('[data-gizmo="translate"]').click(); break;
+    case 's': case 'S': $('#toggle-skeleton').click(); break;
+    case 'm': case 'M': $('#toggle-mesh').click(); break;
+    case 'ArrowRight': e.preventDefault(); setFrame(Math.min(state.clip.frames, Math.round(state.frame) + step)); break;
+    case 'ArrowLeft': e.preventDefault(); setFrame(Math.max(0, Math.round(state.frame) - step)); break;
+    case 'Delete': case 'Backspace': removeKeyHere(); break;
+    case 'Escape': view.select(null); break;
+  }
+});
+
+window.addEventListener('beforeunload', (e) => {
+  if (state.clip.dirty) { e.preventDefault(); e.returnValue = ''; }
+});
+
+/* One handle on the whole app, for the tests that drive it in a real browser
+ * and for poking at it from the browser console when something looks wrong. */
+window.gerak = { state, view, player, api, openModel, keyPose, setFrame, renderTracks };
+
+// ── go ──────────────────────────────────────────────────────────────
+
+loadLibrary();
+loadClips();
+renderRuler();

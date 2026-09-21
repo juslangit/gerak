@@ -1,0 +1,10 @@
+# What gerak writes while it runs, not what it is.
+.library.json
+exports/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+
+# Clips are your work, so they stay:
+#   clips/

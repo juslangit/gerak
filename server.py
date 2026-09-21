@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""
+gerak - the local server.
+
+gerak ("motion") is the app where you open a model that already lives on this
+Mac, click its joints, and pose it into an animation by hand.
+
+This file does four things and nothing else:
+
+  1. finds every 3D model on the machine and works out which ones have a
+     skeleton in them,
+  2. serves the page you look at, and the model files it asks for,
+  3. keeps the clips you author on disk as plain JSON, so an animation you
+     made yesterday is still there tomorrow,
+  4. later, drives Blender for the exports a browser cannot write.
+
+Nothing here needs installing: it is the Python that comes with macOS.
+
+On safety: a server on localhost with no lock on it can be driven by any web
+page you happen to have open, so this one checks two things on every request -
+a token made fresh each run, and that the request came from this app's own
+address. Neither is optional. The same reasoning applies to the file paths it
+will serve: a model is only handed over if it really sits inside one of the
+folders listed in ROOTS.
+"""
+
+import base64
+import json
+import mimetypes
+import os
+import re
+import secrets
+import struct
+import sys
+import threading
+import time
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs, unquote
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+WEB = os.path.join(HERE, "web")
+CLIPS = os.path.join(HERE, "clips")
+EXPORTS = os.path.join(HERE, "exports")
+CACHE = os.path.join(HERE, ".library.json")
+
+PORT = int(os.environ.get("GERAK_PORT", "8778"))
+TOKEN = secrets.token_urlsafe(18)
+HOME = os.path.expanduser("~")
+
+# The only folders gerak will ever read a model out of.
+ROOTS = [
+    os.path.join(HOME, "Desktop", "project"),
+    os.path.join(HOME, "Documents"),
+    os.path.join(HOME, "Downloads"),
+]
+
+MODEL_EXT = (".glb", ".gltf", ".fbx", ".blend", ".obj")
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
+             ".godot", "Library", ".Trash", "addons"}
+
+
+def log(*parts):
+    sys.stderr.write("[gerak] %s\n" % " ".join(str(p) for p in parts))
+    sys.stderr.flush()
+
+
+# --------------------------------------------------------------------------
+# the library: what models are on this Mac, and which of them are rigged
+# --------------------------------------------------------------------------
+
+def glb_summary(path):
+    """Read the JSON header of a .glb without loading the whole file.
+
+    A .glb is a 12-byte header, then a chunk of JSON describing the scene,
+    then the binary blob of vertices. Everything we want for the library -
+    whether there is a skeleton, how many joints, how many animations - is in
+    that JSON chunk, which is usually a few kilobytes. So a 40 MB model costs
+    us almost nothing to look at.
+    """
+    try:
+        with open(path, "rb") as f:
+            magic, _version, _length = struct.unpack("<III", f.read(12))
+            if magic != 0x46546C67:          # 'glTF'
+                return None
+            chunk_len, _chunk_type = struct.unpack("<II", f.read(8))
+            doc = json.loads(f.read(chunk_len).decode("utf-8"))
+    except Exception:
+        return None
+
+    skins = doc.get("skins", [])
+    joints = sum(len(s.get("joints", [])) for s in skins)
+    return {
+        "rigged": len(skins) > 0,
+        "joints": joints,
+        "anims": len(doc.get("animations", [])),
+        "meshes": len(doc.get("meshes", [])),
+    }
+
+
+def scan_library():
+    """Walk the roots and describe every model file found."""
+    out = []
+    for root in ROOTS:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames
+                           if d not in SKIP_DIRS and not d.startswith(".")]
+            for name in filenames:
+                if not name.lower().endswith(MODEL_EXT):
+                    continue
+                full = os.path.join(dirpath, name)
+                try:
+                    size = os.path.getsize(full)
+                    mtime = os.path.getmtime(full)
+                except OSError:
+                    continue
+                item = {
+                    "path": full,
+                    "name": name,
+                    "folder": os.path.dirname(full).replace(HOME, "~"),
+                    "ext": os.path.splitext(name)[1].lower().lstrip("."),
+                    "size": size,
+                    "mtime": mtime,
+                    "rigged": False,
+                    "joints": 0,
+                    "anims": 0,
+                }
+                if item["ext"] == "glb":
+                    summary = glb_summary(full)
+                    if summary:
+                        item.update(summary)
+                out.append(item)
+    out.sort(key=lambda i: (not i["rigged"], -i["mtime"]))
+    return out
+
+
+_library_lock = threading.Lock()
+
+
+def get_library(refresh=False):
+    with _library_lock:
+        if not refresh and os.path.exists(CACHE):
+            age = time.time() - os.path.getmtime(CACHE)
+            if age < 3600:
+                try:
+                    with open(CACHE) as f:
+                        return json.load(f)
+                except Exception:
+                    pass
+        log("scanning for models...")
+        started = time.time()
+        items = scan_library()
+        log("found %d models (%d rigged) in %.1fs"
+            % (len(items), sum(1 for i in items if i["rigged"]),
+               time.time() - started))
+        with open(CACHE, "w") as f:
+            json.dump(items, f)
+        return items
+
+
+def allowed(path):
+    """True only if this really is a file inside one of the roots.
+
+    realpath first, so a path with .. in it, or a symlink pointing out of the
+    folder, is resolved before it is compared - checking the string alone
+    would let both of those through.
+    """
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    if not os.path.isfile(real):
+        return False
+    return any(real.startswith(os.path.realpath(r) + os.sep) for r in ROOTS)
+
+
+# --------------------------------------------------------------------------
+# clips: the animations you author, kept as plain JSON
+# --------------------------------------------------------------------------
+
+SAFE_NAME = re.compile(r"[^a-z0-9_-]+")
+
+
+def clip_path(name):
+    slug = SAFE_NAME.sub("-", name.lower()).strip("-") or "clip"
+    return os.path.join(CLIPS, slug + ".json")
+
+
+def list_clips():
+    out = []
+    for name in sorted(os.listdir(CLIPS)):
+        if not name.endswith(".json"):
+            continue
+        full = os.path.join(CLIPS, name)
+        try:
+            with open(full) as f:
+                doc = json.load(f)
+        except Exception:
+            continue
+        out.append({
+            "slug": name[:-5],
+            "name": doc.get("name", name[:-5]),
+            "model": doc.get("model", ""),
+            "modelName": os.path.basename(doc.get("model", "")),
+            "fps": doc.get("fps", 24),
+            "frames": doc.get("frames", 0),
+            "keys": sum(len(v) for v in doc.get("tracks", {}).values()),
+            "mtime": os.path.getmtime(full),
+        })
+    out.sort(key=lambda c: -c["mtime"])
+    return out
+
+
+# --------------------------------------------------------------------------
+# the web server
+# --------------------------------------------------------------------------
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        pass
+
+    # -- guards ------------------------------------------------------------
+
+    def authorised(self):
+        """Every request must carry this run's token and come from us.
+
+        The token stops another program on the machine from driving gerak.
+        The Origin check stops a web page you have open in another tab from
+        doing it: a POST with a plain content type needs no CORS preflight,
+        so the browser would happily send it.
+        """
+        origin = self.headers.get("Origin")
+        if origin and origin not in ("http://127.0.0.1:%d" % PORT,
+                                     "http://localhost:%d" % PORT):
+            return False
+        query = parse_qs(urlparse(self.path).query)
+        token = (self.headers.get("X-Gerak-Token")
+                 or (query.get("t") or [""])[0])
+        return secrets.compare_digest(token, TOKEN)
+
+    # -- replies -----------------------------------------------------------
+
+    def send_json(self, obj, status=200):
+        body = json.dumps(obj).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_bytes(self, body, ctype, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_file(self, path, ctype=None):
+        if not ctype:
+            ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        try:
+            with open(path, "rb") as f:
+                body = f.read()
+        except OSError:
+            return self.send_json({"error": "cannot read file"}, 404)
+        self.send_bytes(body, ctype)
+
+    def read_body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception:
+            return {}
+
+    # -- routes ------------------------------------------------------------
+
+    def do_GET(self):
+        url = urlparse(self.path)
+        path = url.path
+        query = parse_qs(url.query)
+
+        # The page itself is the one thing served without a token, because
+        # this is where the token is handed over in the first place.
+        if path in ("/", "/index.html"):
+            try:
+                with open(os.path.join(WEB, "index.html")) as f:
+                    page = f.read()
+            except OSError:
+                return self.send_json({"error": "web/index.html missing"}, 500)
+            page = page.replace("__GERAK_TOKEN__", TOKEN)
+            return self.send_bytes(page.encode("utf-8"), "text/html; charset=utf-8")
+
+        # The test pages, served the same way. They carry no data of their
+        # own; everything they touch goes through the guarded API below.
+        if path.startswith("/tests/"):
+            rel = path[len("/tests/"):]
+            base = os.path.realpath(os.path.join(HERE, "tests"))
+            full = os.path.realpath(os.path.join(base, rel))
+            if not full.startswith(base + os.sep):
+                return self.send_json({"error": "no"}, 403)
+            return self.send_file(full, "text/html; charset=utf-8")
+
+        if path.startswith("/web/"):
+            rel = path[len("/web/"):]
+            full = os.path.realpath(os.path.join(WEB, rel))
+            if not full.startswith(os.path.realpath(WEB) + os.sep):
+                return self.send_json({"error": "no"}, 403)
+            ctype = None
+            if full.endswith(".js"):
+                ctype = "text/javascript; charset=utf-8"
+            elif full.endswith(".css"):
+                ctype = "text/css; charset=utf-8"
+            return self.send_file(full, ctype)
+
+        if not self.authorised():
+            return self.send_json({"error": "not authorised"}, 403)
+
+        if path == "/api/library":
+            refresh = (query.get("refresh") or ["0"])[0] == "1"
+            return self.send_json({"items": get_library(refresh)})
+
+        if path == "/api/model":
+            target = unquote((query.get("path") or [""])[0])
+            if not allowed(target):
+                return self.send_json({"error": "outside the allowed folders"}, 403)
+            return self.send_file(target, "model/gltf-binary")
+
+        if path == "/api/clips":
+            return self.send_json({"items": list_clips()})
+
+        if path == "/api/clip":
+            slug = (query.get("slug") or [""])[0]
+            full = clip_path(slug)
+            if not os.path.exists(full):
+                return self.send_json({"error": "no such clip"}, 404)
+            return self.send_file(full, "application/json")
+
+        return self.send_json({"error": "unknown route"}, 404)
+
+    def do_POST(self):
+        if not self.authorised():
+            return self.send_json({"error": "not authorised"}, 403)
+        path = urlparse(self.path).path
+        body = self.read_body()
+
+        if path == "/api/clip/save":
+            name = body.get("name") or "clip"
+            full = clip_path(name)
+            with open(full, "w") as f:
+                json.dump(body, f, indent=1)
+            log("saved clip", os.path.basename(full))
+            return self.send_json({"ok": True,
+                                   "slug": os.path.basename(full)[:-5]})
+
+        if path == "/api/export/save":
+            # The browser can build a .glb but it cannot choose where on the
+            # disk to put it, so it hands the bytes here and we write them
+            # into exports/ where the rest of the app can find them again.
+            name = SAFE_NAME.sub("-", (body.get("name") or "clip").lower()).strip("-")
+            ext = (body.get("ext") or "glb").lower()
+            if ext not in ("glb", "gltf"):
+                return self.send_json({"error": "unsupported format"}, 400)
+            try:
+                raw = base64.b64decode(body.get("data") or "")
+            except Exception:
+                return self.send_json({"error": "bad data"}, 400)
+            if not raw:
+                return self.send_json({"error": "empty file"}, 400)
+            full = os.path.join(EXPORTS, "%s.%s" % (name or "clip", ext))
+            with open(full, "wb") as f:
+                f.write(raw)
+            log("exported", os.path.basename(full), "%.1f KB" % (len(raw) / 1024))
+            return self.send_json({"ok": True, "path": full,
+                                   "shown": full.replace(HOME, "~"),
+                                   "bytes": len(raw)})
+
+        if path == "/api/clip/delete":
+            full = clip_path(body.get("slug") or "")
+            if os.path.exists(full):
+                os.remove(full)
+            return self.send_json({"ok": True})
+
+        if path == "/api/reveal":
+            # Open a finished export in Finder, so the file is where you can
+            # see it rather than only named in a message.
+            target = body.get("path") or EXPORTS
+            if os.path.realpath(target).startswith(os.path.realpath(HERE)):
+                os.system("open -R %s" % json.dumps(target))
+                return self.send_json({"ok": True})
+            return self.send_json({"error": "no"}, 403)
+
+        return self.send_json({"error": "unknown route"}, 404)
+
+
+def main():
+    for folder in (CLIPS, EXPORTS):
+        os.makedirs(folder, exist_ok=True)
+    url = "http://127.0.0.1:%d/?t=%s" % (PORT, TOKEN)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    except OSError as err:
+        if err.errno == 48:
+            log("port %d is already in use - gerak may already be running." % PORT)
+            log("close the other one, or start this with GERAK_PORT=8779 gerak")
+            return 1
+        raise
+    log("gerak is running")
+    log(url)
+    threading.Thread(target=get_library, daemon=True).start()
+    if "--no-open" not in sys.argv:
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        log("stopped")
+
+
+if __name__ == "__main__":
+    main()

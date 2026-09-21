@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>gerak</title>
+<link rel="stylesheet" href="/web/style.css">
+<!-- The joint and its bone, inline, so the page asks the server for nothing extra. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2316181d'/%3E%3Cpath d='M12 13 L23 21' stroke='%23f5a524' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='11' cy='12' r='5' fill='%23f5a524'/%3E%3C/svg%3E">
+<script type="importmap">
+{
+  "imports": {
+    "three": "/web/vendor/three.module.js",
+    "three/addons/": "/web/vendor/"
+  }
+}
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="mark"></span>
+    <span class="wordmark">gerak</span>
+  </div>
+  <div class="loaded" id="loaded-name">nothing open</div>
+  <div class="topbar-actions">
+    <button class="btn" id="btn-save" disabled>Save clip</button>
+    <button class="btn btn-primary" id="btn-export" disabled>Export</button>
+  </div>
+</header>
+
+<main class="workspace">
+
+  <!-- ── left: everything on this Mac ─────────────────────────────── -->
+  <aside class="panel panel-left">
+    <div class="panel-tabs">
+      <button class="tab is-on" data-tab="library">Models</button>
+      <button class="tab" data-tab="clips">Clips</button>
+    </div>
+
+    <section class="tab-body is-on" data-body="library">
+      <div class="search-row">
+        <input type="search" id="library-search" placeholder="Search your models…">
+        <button class="icon-btn" id="btn-rescan" title="Scan the Mac again">⟳</button>
+      </div>
+      <div class="filter-row">
+        <label class="check">
+          <input type="checkbox" id="only-rigged" checked>
+          <span>Only models with a skeleton</span>
+        </label>
+      </div>
+      <div class="list" id="library-list">
+        <p class="hint">Looking for models…</p>
+      </div>
+    </section>
+
+    <section class="tab-body" data-body="clips">
+      <div class="list" id="clip-list">
+        <p class="hint">No clips saved yet.</p>
+      </div>
+    </section>
+  </aside>
+
+  <!-- ── middle: the model ────────────────────────────────────────── -->
+  <section class="stage">
+    <div class="viewport" id="viewport"></div>
+
+    <div class="viewport-empty" id="viewport-empty">
+      <div class="empty-inner">
+        <h1>Pick a model on the left</h1>
+        <p>Anything on this Mac with a skeleton in it. Click a joint,
+           turn it, and press <kbd>K</kbd> to set a key.</p>
+      </div>
+    </div>
+
+    <div class="viewport-tools">
+      <div class="seg" role="group" aria-label="Tool">
+        <button class="seg-btn is-on" data-gizmo="rotate" title="Rotate joint (R)">Rotate</button>
+        <button class="seg-btn" data-gizmo="translate" title="Move joint (G)">Move</button>
+      </div>
+      <div class="seg" role="group" aria-label="Show">
+        <button class="seg-btn is-on" id="toggle-skeleton" title="Show the skeleton (S)">Joints</button>
+        <button class="seg-btn is-on" id="toggle-mesh" title="Show the model (M)">Mesh</button>
+        <button class="seg-btn" id="toggle-ground" title="Show the floor">Floor</button>
+      </div>
+    </div>
+
+    <div class="viewport-readout" id="readout"></div>
+  </section>
+
+  <!-- ── right: the skeleton ──────────────────────────────────────── -->
+  <aside class="panel panel-right">
+    <h2 class="panel-title">Skeleton</h2>
+    <div class="tree" id="bone-tree">
+      <p class="hint">Open a model to see its joints.</p>
+    </div>
+
+    <div class="selected" id="selected-box" hidden>
+      <h2 class="panel-title">Selected joint</h2>
+      <div class="selected-name" id="selected-name">—</div>
+      <div class="rot-grid" id="rot-grid">
+        <label>X<input type="number" step="1" data-axis="x"></label>
+        <label>Y<input type="number" step="1" data-axis="y"></label>
+        <label>Z<input type="number" step="1" data-axis="z"></label>
+      </div>
+      <div class="selected-actions">
+        <button class="btn btn-small" id="btn-reset-joint">Reset joint</button>
+        <button class="btn btn-small" id="btn-mirror">Copy to other side</button>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<!-- ── bottom: the timeline ───────────────────────────────────────── -->
+<footer class="timeline" id="timeline">
+  <div class="transport">
+    <button class="tp" id="tp-start" title="First frame">⏮</button>
+    <button class="tp" id="tp-prev" title="Previous key">◀◀</button>
+    <button class="tp tp-play" id="tp-play" title="Play (space)">▶</button>
+    <button class="tp" id="tp-next" title="Next key">▶▶</button>
+    <button class="tp" id="tp-end" title="Last frame">⏭</button>
+
+    <div class="frame-readout">
+      <input type="number" id="frame-field" value="0" min="0">
+      <span class="of">/</span>
+      <input type="number" id="length-field" value="48" min="1">
+      <span class="unit">frames</span>
+    </div>
+
+    <label class="check">
+      <input type="checkbox" id="chk-loop" checked><span>Loop</span>
+    </label>
+    <label class="check autokey">
+      <input type="checkbox" id="chk-autokey" checked><span>Auto-key</span>
+    </label>
+
+    <div class="spacer"></div>
+
+    <button class="btn btn-small" id="btn-key">Key pose <kbd>K</kbd></button>
+    <button class="btn btn-small" id="btn-unkey">Remove key</button>
+    <label class="fps">
+      <input type="number" id="fps-field" value="24" min="1" max="120"> fps
+    </label>
+  </div>
+
+  <div class="track-area" id="track-area">
+    <div class="ruler" id="ruler"></div>
+    <div class="tracks" id="tracks"></div>
+    <div class="playhead" id="playhead"></div>
+  </div>
+</footer>
+
+<div class="toast" id="toast" hidden></div>
+
+<script>window.GERAK_TOKEN = "__GERAK_TOKEN__";</script>
+<script type="module" src="/web/app.js"></script>
+</body>
+</html>
