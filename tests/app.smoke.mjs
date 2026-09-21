@@ -68,7 +68,6 @@ try {
   say(!!g.view.gizmo.object, 'the rotate ring attached to it');
 
   // ── turn it and key it ────────────────────────────────────────────
-  const before = arm.quaternion.clone();
   arm.rotation.z += 0.6;
   g.keyPose(0);
   say(g.state.clip.hasKey(arm.name, 0), 'keying at frame 0 stored the pose');
@@ -106,6 +105,113 @@ try {
   const moved = g.player.frame > 0;
   g.player.pause();
   say(moved, `playback advanced to frame ${g.player.frame.toFixed(1)} and stopped cleanly`);
+
+  // ── IK: the limbs, the handle, and the pin ────────────────────────
+  const chains = g.state.chains;
+  say(chains.length > 0, `found ${chains.length} limbs: ${chains.map((c) => c.label).join(', ')}`);
+  say(document.querySelectorAll('#limb-list .limb-row').length === chains.length,
+    'the limbs panel lists each of them with an FK/IK switch');
+
+  const leg = chains.find((c) => /leg/i.test(c.label)) || chains[0];
+  g.setChainMode(leg, 'ik');
+  say(leg.enabled && g.view.handles.length === 1,
+    `${leg.label} switched to IK and grew a draggable handle`);
+
+  // Switching to IK must not move the model at all.
+  const tipNow = new (leg.tip.position.constructor)();
+  leg.tip.getWorldPosition(tipNow);
+  say(tipNow.distanceTo(leg.target) < 1e-6,
+    'turning IK on left the limb exactly where it was');
+
+  /* Drag the handle, the way the gizmo does.
+   *
+   * A standing rig has its legs almost straight, so a target further from the
+   * hip than the leg is long is simply unreachable - the honest answer there
+   * is a straight leg pointing at it, not a foot that teleports. So the goal
+   * is picked as a fraction of the limb's own reach, and both behaviours are
+   * checked separately. */
+  const V3 = leg.tip.position.constructor;
+  const hipAt = new V3();
+  leg.root.getWorldPosition(hipAt);
+  const reach = leg.reach();
+  const reachable = (p) => hipAt.distanceTo(p) < reach * 0.995;
+
+  // Toward the hip and out to the side: a bend, comfortably within reach.
+  const goal = leg.target.clone();
+  goal.lerp(hipAt, 0.22);
+  goal.x += reach * 0.12;
+  say(reachable(goal), `the test target is inside the limb's reach (${reach.toFixed(3)})`);
+
+  g.view.onHandleMoved(leg, goal);
+  g.view.scene.updateMatrixWorld(true);
+  const landed = new V3();
+  leg.tip.getWorldPosition(landed);
+  const miss = landed.distanceTo(goal);
+  say(miss < reach * 1e-4,
+    `dragging the handle put the foot ${miss.toExponential(1)} from the target (limb reach ${reach.toFixed(3)})`);
+
+  // And a target it cannot possibly reach: the leg should go straight and
+  // point at it rather than tear itself apart.
+  const tooFar = hipAt.clone().add(new V3(0, -reach * 4, 0));
+  g.view.onHandleMoved(leg, tooFar);
+  g.view.scene.updateMatrixWorld(true);
+  const stretched = new V3();
+  leg.tip.getWorldPosition(stretched);
+  const spanned = hipAt.distanceTo(stretched);
+  say(spanned > reach * 0.999 && spanned <= reach * 1.001,
+    `an out-of-reach target straightens the leg to its full ${spanned.toFixed(3)} of ${reach.toFixed(3)}`);
+  say(Number.isFinite(spanned), 'and produces no NaN');
+
+  // Back somewhere sensible before keying.
+  g.view.onHandleMoved(leg, goal);
+
+  // Dropping it keys the joints the solver moved.
+  g.setFrame(24);
+  g.view.onHandleMoved(leg, goal);
+  g.view.onHandleDropped(leg);
+  const keyedByIK = leg.bones.filter((b) => g.state.clip.hasKey(b.name, 24));
+  say(keyedByIK.length === leg.bones.length,
+    `letting go keyed all ${keyedByIK.length} joints the solver turned`);
+
+  // Nothing about the chain should survive on the bones themselves - that is
+  // what keeps the exported .glb free of constraints.
+  say(leg.bones.every((b) => !b.userData.ik && !b.constraint),
+    'IK left no machinery on the bones, only rotations');
+
+  // ── pinning: move the body, the foot stays planted ────────────────
+  g.togglePin(leg);
+  say(leg.pinned, `${leg.label} is pinned`);
+
+  const planted = leg.target.clone();
+  const hips = g.state.bones.find((b) => /hips|pelvis/i.test(b.name)) || g.state.bones[0];
+  g.view.select(hips);
+  hips.rotation.x += 0.12;
+  g.view.onDragEnd(hips);
+  g.view.scene.updateMatrixWorld(true);
+
+  const hipMoved = new V3();
+  leg.root.getWorldPosition(hipMoved);
+  const stillReachable = hipMoved.distanceTo(planted) < reach * 0.995;
+  say(stillReachable, 'after tilting the body the planted spot is still within reach');
+
+  const afterMove = new V3();
+  leg.tip.getWorldPosition(afterMove);
+  const slip = afterMove.distanceTo(planted);
+  say(slip < reach * 1e-3,
+    `the pinned foot slipped ${slip.toExponential(1)} while the body tilted — it stayed planted`);
+
+  // And with the pin off, the same move should carry the foot along.
+  g.togglePin(leg);
+  const footWas = leg.target.clone();
+  hips.rotation.x -= 0.36;
+  g.view.onDragEnd(hips);
+  g.view.scene.updateMatrixWorld(true);
+  const carried = new (leg.tip.position.constructor)();
+  leg.tip.getWorldPosition(carried);
+  say(carried.distanceTo(footWas) > 1e-3,
+    'with the pin off, the foot travels with the body as it should');
+
+  g.setFrame(0);
 
   // ── export, and check the file really landed on the disk ──────────
   document.querySelector('#btn-export').click();

@@ -14,6 +14,7 @@ import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/GLTFExporter.js';
 import { Viewport } from '/web/scene.js';
 import { Clip, Player } from '/web/clip.js';
+import { detectLimbs, chainFrom } from '/web/ik.js';
 
 const $ = (sel) => document.querySelector(sel);
 const TOKEN = window.GERAK_TOKEN;
@@ -41,7 +42,7 @@ const state = {
   model: null,          // the library row that is open
   bones: [],
   frame: 0,
-  pinned: new Set(),
+  chains: [],           // the limbs, each either FK or IK
 };
 
 const view = new Viewport($('#viewport'));
@@ -143,7 +144,7 @@ async function openModel(item) {
     const info = await view.load(modelURL(item.path));
     state.model = item;
     state.bones = info.bones;
-    state.pinned.clear();
+    state.chains = [];
     state.clip = new Clip({
       name: item.name.replace(/\.(glb|gltf|fbx)$/i, ''),
       model: item.path,
@@ -158,7 +159,9 @@ async function openModel(item) {
     $('#btn-save').disabled = false;
     $('#btn-export').disabled = false;
 
+    state.chains = detectLimbs(state.bones);
     renderBoneTree();
+    renderLimbs();
     setFrame(0);
     renderTracks();
     offerSourceClips(info.clips);
@@ -251,6 +254,122 @@ function paintBoneTree() {
   });
 }
 
+// ── limbs: FK or IK ─────────────────────────────────────────────────
+
+function renderLimbs() {
+  const box = $('#limbs-box');
+  const list = $('#limb-list');
+  box.hidden = !state.chains.length;
+  if (!state.chains.length) return;
+
+  list.innerHTML = state.chains.map((chain, i) => `
+    <div class="limb-row${chain.enabled ? ' is-ik' : ''}" data-i="${i}">
+      <span class="limb-name" title="${escapeHTML(chain.bones.map((b) => b.name).join(' → '))}">${escapeHTML(chain.label)}</span>
+      <span class="mode-toggle">
+        <button data-mode="fk" class="${chain.enabled ? '' : 'is-on'}">FK</button>
+        <button data-mode="ik" class="${chain.enabled ? 'is-on' : ''}">IK</button>
+      </span>
+      <button class="pin-btn${chain.pinned ? ' is-on' : ''}" title="Pin it in place"
+              ${chain.enabled ? '' : 'disabled'}>📌</button>
+    </div>`).join('');
+
+  list.querySelectorAll('.limb-row').forEach((row) => {
+    const chain = state.chains[+row.dataset.i];
+    row.querySelectorAll('.mode-toggle button').forEach((btn) => {
+      btn.onclick = () => setChainMode(chain, btn.dataset.mode);
+    });
+    row.querySelector('.pin-btn').onclick = () => togglePin(chain);
+  });
+}
+
+function setChainMode(chain, mode) {
+  const on = mode === 'ik';
+  if (chain.enabled === on) return;
+  chain.enabled = on;
+  if (on) {
+    // Take the handle from wherever the limb is standing right now, so
+    // switching to IK never moves the model.
+    view.scene.updateMatrixWorld(true);
+    chain.capture();
+    view.addHandle(chain);
+    toast(`${chain.label} is on IK — drag the green diamond.`);
+  } else {
+    chain.pinned = false;
+    view.removeHandle(chain);
+    toast(`${chain.label} is back on FK — turn its joints directly.`);
+  }
+  view.syncHandles();
+  renderLimbs();
+}
+
+function togglePin(chain) {
+  if (!chain.enabled) return;
+  chain.pinned = !chain.pinned;
+  if (chain.pinned) {
+    view.scene.updateMatrixWorld(true);
+    chain.capture();
+    toast(`${chain.label} is pinned — it stays put while you move the body.`);
+  }
+  view.syncHandles();
+  renderLimbs();
+}
+
+/**
+ * Re-plant every pinned limb.
+ *
+ * This is what "pinned" means in practice: you move the hips, and before
+ * anything is keyed the pinned foot is solved back onto the spot it was
+ * standing on. Called after a joint is moved by hand, never during playback -
+ * playback plays the keys, and the keys already have the pinning baked in.
+ */
+function applyPins(except = null) {
+  const moved = [];
+  for (const chain of state.chains) {
+    if (!chain.enabled || !chain.pinned || chain === except) continue;
+    view.scene.updateMatrixWorld(true);
+    chain.solve(chain.target);
+    moved.push(...chain.bones);
+  }
+  if (moved.length) view.syncHandles();
+  return moved;
+}
+
+/** Take the handles along with the pose, so they never lag behind the model. */
+function refreshChains() {
+  if (!state.chains.length) return;
+  view.scene.updateMatrixWorld(true);
+  for (const chain of state.chains) {
+    if (chain.enabled && !chain.pinned) chain.capture();
+  }
+  view.syncHandles();
+}
+
+// Dragging a green diamond solves that limb, live, as you move it.
+view.onHandleMoved = (chain, position) => {
+  chain.solve(position);
+  updateReadout();
+};
+
+view.onHandleDropped = (chain) => {
+  const bones = chain.bones.concat(applyPins(chain));
+  if ($('#chk-autokey').checked) keyBones(bones, state.frame);
+  toast(`${chain.label} posed${$('#chk-autokey').checked ? ` and keyed at frame ${Math.round(state.frame)}` : ''}.`);
+};
+
+$('#btn-make-chain').onclick = () => {
+  const bone = view.selected;
+  if (!bone) return;
+  const chain = chainFrom(bone, state.bones, 3);
+  if (!chain) { toast('That joint has nothing above it to make a chain from.', true); return; }
+  if (state.chains.some((c) => c.name === chain.name)) {
+    toast('There is already a chain ending at that joint.'); return;
+  }
+  chain.label = prettyBone(bone.name);
+  state.chains.push(chain);
+  renderLimbs();
+  setChainMode(chain, 'ik');
+};
+
 // ── selection ───────────────────────────────────────────────────────
 
 view.onSelect = (bone) => {
@@ -267,7 +386,9 @@ view.onSelect = (bone) => {
 
 // Dragging the ring writes a key the moment you let go, if auto-key is on.
 view.onDragEnd = (bone) => {
-  if ($('#chk-autokey').checked) keyBone(bone, state.frame);
+  const alsoMoved = applyPins();
+  if ($('#chk-autokey').checked) keyBones([bone, ...alsoMoved], state.frame);
+  refreshChains();
   refreshRotationFields();
   updateReadout();
 };
@@ -315,7 +436,17 @@ function updateReadout() {
 // ── keys ────────────────────────────────────────────────────────────
 
 function keyBone(bone, frame) {
-  state.clip.setKey(bone.name, frame, bone.quaternion, bone.position);
+  keyBones([bone], frame);
+}
+
+/** One key per bone, then one redraw - not one redraw per bone. */
+function keyBones(bones, frame) {
+  const seen = new Set();
+  for (const bone of bones) {
+    if (seen.has(bone.name)) continue;
+    seen.add(bone.name);
+    state.clip.setKey(bone.name, frame, bone.quaternion, bone.position);
+  }
   renderTracks();
   paintBoneTree();
   markDirty();
@@ -373,7 +504,10 @@ function markDirty() {
 
 function setFrame(frame, fromPlayer = false) {
   state.frame = frame;
-  if (state.bones.length) state.clip.applyTo(state.bones, view.restPose, frame);
+  if (state.bones.length) {
+    state.clip.applyTo(state.bones, view.restPose, frame);
+    refreshChains();
+  }
   if (!fromPlayer) player.frame = frame;
 
   const shown = Math.round(frame);
@@ -739,7 +873,11 @@ window.addEventListener('beforeunload', (e) => {
 
 /* One handle on the whole app, for the tests that drive it in a real browser
  * and for poking at it from the browser console when something looks wrong. */
-window.gerak = { state, view, player, api, openModel, keyPose, setFrame, renderTracks };
+window.gerak = {
+  state, view, player, api,
+  openModel, keyPose, setFrame, renderTracks,
+  renderLimbs, setChainMode, togglePin, applyPins,
+};
 
 // ── go ──────────────────────────────────────────────────────────────
 

@@ -20,7 +20,9 @@ export class Viewport {
     this.el = el;
     this.bones = [];
     this.markers = [];
+    this.handles = [];        // the draggable IK targets
     this.selected = null;
+    this.selectedHandle = null;
     this.hovered = null;
     this.model = null;
     this.skinned = [];
@@ -29,6 +31,8 @@ export class Viewport {
     this.onSelect = () => {};
     this.onJointChanged = () => {};
     this.onDragEnd = () => {};
+    this.onHandleMoved = () => {};
+    this.onHandleDropped = () => {};
 
     this._buildScene();
     this._buildPicking();
@@ -107,10 +111,17 @@ export class Viewport {
     // spins away under your hand.
     this.gizmo.addEventListener('dragging-changed', (e) => {
       this.orbit.enabled = !e.value;
-      if (!e.value && this.selected) this.onDragEnd(this.selected);
+      if (e.value) return;
+      if (this.selectedHandle) this.onHandleDropped(this.selectedHandle.userData.chain);
+      else if (this.selected) this.onDragEnd(this.selected);
     });
     this.gizmo.addEventListener('objectChange', () => {
-      if (this.selected) this.onJointChanged(this.selected);
+      if (this.selectedHandle) {
+        this.onHandleMoved(this.selectedHandle.userData.chain,
+          this.selectedHandle.position);
+      } else if (this.selected) {
+        this.onJointChanged(this.selected);
+      }
     });
 
     this.modelRoot = new THREE.Group();
@@ -119,6 +130,9 @@ export class Viewport {
     this.jointGroup = new THREE.Group();
     this.scene.add(this.jointGroup);
 
+    this.handleGroup = new THREE.Group();
+    this.scene.add(this.handleGroup);
+
     // Joint dots and bone lines ignore depth on purpose, so a hip joint
     // buried inside a body is still visible and still clickable. A rigger
     // needs to reach the joint, not admire the skin covering it.
@@ -126,6 +140,12 @@ export class Viewport {
     this.matHover = new THREE.MeshBasicMaterial({ color: 0xffd98a, depthTest: false });
     this.matSel   = new THREE.MeshBasicMaterial({ color: 0x4ea3f5, depthTest: false });
     this.matPinned = new THREE.MeshBasicMaterial({ color: 0x35c08a, depthTest: false });
+
+    // An IK target is drawn as a diamond rather than a ball, so at a glance
+    // you can tell "drag me somewhere" from "turn me".
+    this.matHandle = new THREE.MeshBasicMaterial({ color: 0x35c08a, depthTest: false });
+    this.matHandlePinned = new THREE.MeshBasicMaterial({ color: 0xef6461, depthTest: false });
+    this.matHandleSel = new THREE.MeshBasicMaterial({ color: 0xa8f5d5, depthTest: false });
 
     this.boneLines = new THREE.LineSegments(
       new THREE.BufferGeometry(),
@@ -163,18 +183,23 @@ export class Viewport {
 
     const hit = (e) => {
       this.ray.setFromCamera(toPointer(e), this.camera);
-      const found = this.ray.intersectObjects(this.markers, false);
-      return found.length ? found[0].object.userData.bone : null;
+      // Handles first: an IK target sits right on top of the joint it drives,
+      // and reaching for the target is the more likely intent.
+      const onHandle = this.ray.intersectObjects(this.handles, false);
+      if (onHandle.length) return { handle: onHandle[0].object };
+      const onJoint = this.ray.intersectObjects(this.markers, false);
+      return onJoint.length ? { bone: onJoint[0].object.userData.bone } : null;
     };
 
     this.renderer.domElement.addEventListener('pointermove', (e) => {
       if (this.gizmo.dragging) return;
-      const bone = hit(e);
+      const found = hit(e);
+      const bone = found && found.bone ? found.bone : null;
       if (bone !== this.hovered) {
         this.hovered = bone;
-        this.renderer.domElement.style.cursor = bone ? 'pointer' : '';
         this._paintMarkers();
       }
+      this.renderer.domElement.style.cursor = found ? 'pointer' : '';
     });
 
     // A click selects; a drag is the camera orbiting, so remember where the
@@ -187,18 +212,77 @@ export class Viewport {
       const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
       downAt = null;
       if (moved > 4 || this.gizmo.dragging) return;
-      const bone = hit(e);
-      if (bone) this.select(bone);
+      const found = hit(e);
+      if (found && found.handle) this.selectHandle(found.handle);
+      else if (found && found.bone) this.select(found.bone);
       else if (!this.gizmo.axis) this.select(null);
     });
   }
 
   select(bone) {
     this.selected = bone;
-    if (bone) this.gizmo.attach(bone);
-    else this.gizmo.detach();
+    this.selectedHandle = null;
+    if (bone) {
+      this.gizmo.setMode(this.boneMode || 'rotate');
+      this.gizmo.attach(bone);
+    } else {
+      this.gizmo.detach();
+    }
     this._paintMarkers();
     this.onSelect(bone);
+  }
+
+  /** Pick up an IK target. These are always dragged, never turned. */
+  selectHandle(handle) {
+    this.selected = null;
+    this.selectedHandle = handle;
+    this.gizmo.setMode('translate');
+    this.gizmo.attach(handle);
+    this._paintMarkers();
+    this.onSelect(null);
+  }
+
+  // ── IK targets ────────────────────────────────────────────────────
+
+  addHandle(chain) {
+    const r = Math.max(this.modelSize * 0.026, 0.008);
+    const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(r), this.matHandle);
+    mesh.renderOrder = 1000;
+    mesh.frustumCulled = false;
+    mesh.userData.chain = chain;
+    mesh.position.copy(chain.target);
+    this.handleGroup.add(mesh);
+    this.handles.push(mesh);
+    chain.handle = mesh;
+    return mesh;
+  }
+
+  removeHandle(chain) {
+    const mesh = chain.handle;
+    if (!mesh) return;
+    if (this.selectedHandle === mesh) { this.selectedHandle = null; this.gizmo.detach(); }
+    this.handleGroup.remove(mesh);
+    mesh.geometry.dispose();
+    this.handles = this.handles.filter((h) => h !== mesh);
+    chain.handle = null;
+  }
+
+  clearHandles() {
+    for (const mesh of this.handles.slice()) {
+      if (mesh.userData.chain) this.removeHandle(mesh.userData.chain);
+    }
+  }
+
+  /** Put every handle back on its chain's target, and colour the pinned ones. */
+  syncHandles() {
+    for (const mesh of this.handles) {
+      const chain = mesh.userData.chain;
+      if (this.selectedHandle !== mesh) mesh.position.copy(chain.target);
+      mesh.material = this.selectedHandle === mesh ? this.matHandleSel
+        : chain.pinned ? this.matHandlePinned
+        : this.matHandle;
+      mesh.scale.setScalar(this.selectedHandle === mesh ? 1.3 : 1);
+    }
   }
 
   selectByName(name) {
@@ -206,7 +290,10 @@ export class Viewport {
     if (bone) this.select(bone);
   }
 
-  setGizmoMode(mode) { this.gizmo.setMode(mode); }
+  setGizmoMode(mode) {
+    this.boneMode = mode;
+    if (!this.selectedHandle) this.gizmo.setMode(mode);
+  }
 
   _paintMarkers() {
     for (const m of this.markers) {
@@ -299,6 +386,7 @@ export class Viewport {
     this.sourceClips = [];
     for (const m of this.markers) this.jointGroup.remove(m);
     this.markers = [];
+    this.clearHandles();
   }
 
   _frameCamera() {

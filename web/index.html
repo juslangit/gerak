@@ -95,6 +95,17 @@
       <p class="hint">Open a model to see its joints.</p>
     </div>
 
+    <div class="limbs" id="limbs-box" hidden>
+      <h2 class="panel-title">Limbs</h2>
+      <div class="limb-list" id="limb-list"></div>
+      <p class="limb-note">
+        <strong>FK</strong> turns a joint and the rest of the limb follows.
+        <strong>IK</strong> gives you a handle to drag the hand or foot to,
+        and works the joints out for you. Pin a foot and it stays planted
+        while you move the body.
+      </p>
+    </div>
+
     <div class="selected" id="selected-box" hidden>
       <h2 class="panel-title">Selected joint</h2>
       <div class="selected-name" id="selected-name">—</div>
@@ -107,6 +118,7 @@
         <button class="btn btn-small" id="btn-reset-joint">Reset joint</button>
         <button class="btn btn-small" id="btn-mirror">Copy to other side</button>
       </div>
+      <button class="btn btn-small btn-wide" id="btn-make-chain">Make an IK chain from here</button>
     </div>
   </aside>
 </main>
