@@ -14,6 +14,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { TransformControls } from 'three/addons/TransformControls.js';
 import { GLTFLoader } from 'three/addons/GLTFLoader.js';
+import { Grid } from '/web/grid.js';
+import { AxisGizmo, CameraSwing } from '/web/axes.js';
 
 export class Viewport {
   constructor(el) {
@@ -84,10 +86,14 @@ export class Viewport {
     fill.position.set(-4, 2.4, -3);
     this.scene.add(fill);
 
-    this.grid = new THREE.GridHelper(12, 24, 0x3a4150, 0x23262e);
-    this.grid.material.transparent = true;
-    this.grid.material.opacity = 0.55;
+    this.grid = new Grid();
     this.scene.add(this.grid);
+
+    // The widget in the corner, and the swing that takes the camera to an
+    // axis when one of its balls is clicked.
+    this.gizmo = new AxisGizmo();
+    this.swing = new CameraSwing(this.camera, this.orbit);
+    this.gizmo.onPick = (direction) => this.swing.start(direction);
 
     this.ground = new THREE.Mesh(
       new THREE.PlaneGeometry(24, 24),
@@ -101,21 +107,21 @@ export class Viewport {
     // The ring you drag. In three r169 TransformControls is a controller and
     // its visible part comes from getHelper(), which is the thing that gets
     // added to the scene.
-    this.gizmo = new TransformControls(this.camera, this.renderer.domElement);
-    this.gizmo.setMode('rotate');
-    this.gizmo.setSize(0.82);
-    this.gizmo.setSpace('local');
-    this.scene.add(this.gizmo.getHelper());
+    this.transform = new TransformControls(this.camera, this.renderer.domElement);
+    this.transform.setMode('rotate');
+    this.transform.setSize(0.82);
+    this.transform.setSpace('local');
+    this.scene.add(this.transform.getHelper());
 
     // While a ring is being dragged the camera must hold still, or the model
     // spins away under your hand.
-    this.gizmo.addEventListener('dragging-changed', (e) => {
+    this.transform.addEventListener('dragging-changed', (e) => {
       this.orbit.enabled = !e.value;
       if (e.value) return;
       if (this.selectedHandle) this.onHandleDropped(this.selectedHandle.userData.chain);
       else if (this.selected) this.onDragEnd(this.selected);
     });
-    this.gizmo.addEventListener('objectChange', () => {
+    this.transform.addEventListener('objectChange', () => {
       if (this.selectedHandle) {
         this.onHandleMoved(this.selectedHandle.userData.chain,
           this.selectedHandle.position);
@@ -191,8 +197,26 @@ export class Viewport {
       return onJoint.length ? { bone: onJoint[0].object.userData.bone } : null;
     };
 
+    /** Where the pointer is on the canvas, in CSS pixels from the top left. */
+    const onCanvas = (e) => {
+      const r = this.renderer.domElement.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height };
+    };
+
     this.renderer.domElement.addEventListener('pointermove', (e) => {
-      if (this.gizmo.dragging) return;
+      if (this.transform.dragging) return;
+
+      // The gizmo sits on top of the viewport, so it is asked first.
+      const at = onCanvas(e);
+      if (this.gizmo.contains(at.x, at.y, at.w, at.h)) {
+        const ball = this.gizmo.hit(at.x, at.y, at.w, at.h);
+        this.gizmo.setHover(ball);
+        this.renderer.domElement.style.cursor = ball ? 'pointer' : '';
+        if (this.hovered) { this.hovered = null; this._paintMarkers(); }
+        return;
+      }
+      if (this.gizmo.hovered) this.gizmo.setHover(null);
+
       const found = hit(e);
       const bone = found && found.bone ? found.bone : null;
       if (bone !== this.hovered) {
@@ -211,11 +235,19 @@ export class Viewport {
       if (!downAt) return;
       const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
       downAt = null;
-      if (moved > 4 || this.gizmo.dragging) return;
+      if (moved > 4 || this.transform.dragging) return;
+
+      const at = onCanvas(e);
+      if (this.gizmo.contains(at.x, at.y, at.w, at.h)) {
+        const ball = this.gizmo.hit(at.x, at.y, at.w, at.h);
+        if (ball) this.gizmo.onPick(ball.userData.direction);
+        return;
+      }
+
       const found = hit(e);
       if (found && found.handle) this.selectHandle(found.handle);
       else if (found && found.bone) this.select(found.bone);
-      else if (!this.gizmo.axis) this.select(null);
+      else if (!this.transform.axis) this.select(null);
     });
   }
 
@@ -223,10 +255,10 @@ export class Viewport {
     this.selected = bone;
     this.selectedHandle = null;
     if (bone) {
-      this.gizmo.setMode(this.boneMode || 'rotate');
-      this.gizmo.attach(bone);
+      this.transform.setMode(this.boneMode || 'rotate');
+      this.transform.attach(bone);
     } else {
-      this.gizmo.detach();
+      this.transform.detach();
     }
     this._paintMarkers();
     this.onSelect(bone);
@@ -236,8 +268,8 @@ export class Viewport {
   selectHandle(handle) {
     this.selected = null;
     this.selectedHandle = handle;
-    this.gizmo.setMode('translate');
-    this.gizmo.attach(handle);
+    this.transform.setMode('translate');
+    this.transform.attach(handle);
     this._paintMarkers();
     this.onSelect(null);
   }
@@ -260,7 +292,7 @@ export class Viewport {
   removeHandle(chain) {
     const mesh = chain.handle;
     if (!mesh) return;
-    if (this.selectedHandle === mesh) { this.selectedHandle = null; this.gizmo.detach(); }
+    if (this.selectedHandle === mesh) { this.selectedHandle = null; this.transform.detach(); }
     this.handleGroup.remove(mesh);
     mesh.geometry.dispose();
     this.handles = this.handles.filter((h) => h !== mesh);
@@ -292,7 +324,7 @@ export class Viewport {
 
   setGizmoMode(mode) {
     this.boneMode = mode;
-    if (!this.selectedHandle) this.gizmo.setMode(mode);
+    if (!this.selectedHandle) this.transform.setMode(mode);
   }
 
   _paintMarkers() {
@@ -363,7 +395,7 @@ export class Viewport {
   }
 
   clear() {
-    this.gizmo.detach();
+    this.transform.detach();
     this.selected = null;
     this.hovered = null;
     if (this.model) {
@@ -418,9 +450,8 @@ export class Viewport {
     this.camera.updateProjectionMatrix();
     this.orbit.update();
 
-    const g = Math.max(4, Math.ceil(this.modelSize * 4));
-    this.grid.scale.setScalar(g / 12);
-    this.gizmo.setSize(Math.max(0.5, Math.min(1.4, this.modelSize * 0.55)));
+    this.grid.fitTo(this.modelSize);
+    this.transform.setSize(Math.max(0.5, Math.min(1.4, this.modelSize * 0.55)));
   }
 
   _buildMarkers() {
@@ -564,15 +595,22 @@ export class Viewport {
   setMeshVisible(on) { if (this.model) this.model.visible = on; }
   setGroundVisible(on) { this.ground.visible = on; this.grid.visible = on; }
 
+  setGizmoVisible(on) { this.gizmo.visible = on; }
+
   // ── the frame loop ────────────────────────────────────────────────
 
   _loop() {
     const tick = () => {
       requestAnimationFrame(tick);
+      this.swing.update();          // a click on the corner widget, in flight
       this.orbit.update();
+      this.grid.update(this.camera);
       this.scene.updateMatrixWorld(true);
       this._syncMarkers();
       this.renderer.render(this.scene, this.camera);
+      if (this.gizmo.visible !== false) {
+        this.gizmo.render(this.renderer, this.camera, this.orbit.target);
+      }
     };
     tick();
   }

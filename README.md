@@ -67,6 +67,11 @@ the moments that matter.
 
 **Play it.** Space bar. Loop is on by default.
 
+**Know which way round you are.** The floor is a proper grid — fine squares
+with a brighter line every tenth, a red line down X and a blue one down Z,
+fading out with distance. In the top right is the axis widget: click any ball
+to swing the camera flat onto that axis without changing how far away it is.
+
 **Turn IK on for an arm or a leg.** Each limb has an **FK / IK** switch in the
 Limbs panel. On FK you turn the joints one at a time. On IK you get a green
 diamond to drag, and the shoulder and elbow are worked out to put the hand
@@ -252,3 +257,21 @@ that never leaves this machine needs.
 
 The log is at `~/Library/Logs/gerak.log`, and the app's own menu has a
 **Show the log** item.
+
+## The floor, and which way is up
+
+The grid is not made of lines. It is one flat surface with a shader that
+works out, per pixel, how close that pixel is to a grid line and how wide a
+line should look from where the camera is standing — which is why it stays
+one pixel thick however far you zoom in, and dissolves into the distance
+instead of turning into a shimmering moiré. It picks its own spacing from the
+size of the model, so a chess piece and a two-metre character both get a
+sensible number of squares under them.
+
+The axis widget in the corner turns with the view and snaps the camera to an
+axis when you click a ball. **It says Y at the top where Blender says Z**, and
+that is deliberate: gerak's world is Y-up, like glTF and like Godot, because
+that is what the files it opens and writes actually contain. Blender is Z-up
+and converts on the way in and out. The widget names the axes the model really
+has rather than the ones Blender would call them — otherwise moving a joint
+"up the Z axis" would move it the wrong way.

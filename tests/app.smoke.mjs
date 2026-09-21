@@ -65,7 +65,45 @@ try {
   say(g.view.selected === arm, `selected the joint "${arm.name}"`);
   say(document.querySelector('#selected-name').textContent.length > 0,
     'the selected-joint panel filled in');
-  say(!!g.view.gizmo.object, 'the rotate ring attached to it');
+  say(!!g.view.transform.object, 'the rotate ring attached to it');
+
+  // ── the floor and the axis widget ─────────────────────────────────
+  say(g.view.grid.visible, 'the grid is on when you open a model, not hidden behind a button');
+  const unit = g.view.grid.material.uniforms.uUnit.value;
+  say(unit > 0 && unit < g.view.modelSize,
+    `the grid spacing suits the model: ${unit} for a model ${g.view.modelSize.toFixed(2)} across`);
+  say(g.view.gizmo.balls.length === 6,
+    `the axis widget has ${g.view.gizmo.balls.length} balls — three axes, each way`);
+
+  const widget = g.view.renderer.domElement.getBoundingClientRect();
+  const box = g.view.gizmo.rect(widget.width, widget.height);
+  say(g.view.gizmo.contains(box.left + 4, box.top + 4, widget.width, widget.height)
+      && !g.view.gizmo.contains(10, 10, widget.width, widget.height),
+    'it claims the pointer only in its own corner');
+
+  /* The middle of the widget is usually empty - the balls sit out at the
+   * ends of the axes - so the test asks where a ball actually lands on
+   * screen and clicks there. That checks the whole mapping from a pointer on
+   * the canvas to a ball in the widget's own little scene. */
+  const wanted = g.view.gizmo.balls.find((b) => b.userData.axis === 'Y' && b.userData.sign === 1);
+  const onScreen = wanted.position.clone().project(g.view.gizmo.camera);
+  const ball = g.view.gizmo.hit(
+    box.left + (onScreen.x * 0.5 + 0.5) * box.size,
+    box.top + (-onScreen.y * 0.5 + 0.5) * box.size,
+    widget.width, widget.height);
+  say(ball === wanted,
+    `clicking where the Y ball is drawn finds ${ball ? ball.userData.axis + (ball.userData.sign > 0 ? '+' : '-') : 'nothing'}`);
+
+  const stood = g.view.camera.position.clone();
+  const away = stood.distanceTo(g.view.orbit.target);
+  g.view.gizmo.onPick(new (stood.constructor)(1, 0, 0));
+  await wait(600);
+  const swungTo = g.view.camera.position.clone();
+  const facing = swungTo.clone().sub(g.view.orbit.target).normalize();
+  say(facing.x > 0.999,
+    `picking X swung the camera onto the X axis (${facing.x.toFixed(3)}, ${facing.y.toFixed(3)}, ${facing.z.toFixed(3)})`);
+  say(Math.abs(swungTo.distanceTo(g.view.orbit.target) - away) < away * 0.02,
+    'and kept its distance, so the model stays the same size');
 
   // ── turn it and key it ────────────────────────────────────────────
   arm.rotation.z += 0.6;

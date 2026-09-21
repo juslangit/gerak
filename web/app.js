@@ -1085,7 +1085,6 @@ const toggle = (el, fn) => {
 toggle($('#toggle-skeleton'), (on) => view.setSkeletonVisible(on));
 toggle($('#toggle-mesh'), (on) => view.setMeshVisible(on));
 toggle($('#toggle-ground'), (on) => view.setGroundVisible(on));
-view.setGroundVisible(false);
 
 window.addEventListener('resize', () => renderTracks());
 

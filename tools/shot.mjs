@@ -106,7 +106,6 @@ const SHOTS_TO_TAKE = [
       g.setFrame(30);
       arm.rotation.z += 0.7; g.keyPose(30);
       g.setFrame(22);
-      document.querySelector('#toggle-ground').click();
     `,
   },
   {

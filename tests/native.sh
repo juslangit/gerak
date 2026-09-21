@@ -126,9 +126,14 @@ run_app 9 --js "
     const before = g.state.clip.totalKeys();
     g.command('key');                       // the Pose > Key the Pose menu item
     const after = g.state.clip.totalKeys();
+    // The floor is on when you open a model, so the menu item turns it off.
+    // What is being checked is that the command reaches the page at all.
+    const floorWas = g.view.grid.visible;
     g.command('floor');                     // the View > Show the Floor item
-    const floor = g.view.ground.visible;
-    return JSON.stringify({ model: pick.name, before, after, floor, cmds: Object.keys(g.state).length });
+    const floorNow = g.view.grid.visible;
+    return JSON.stringify({ model: pick.name, before, after,
+                            flipped: floorWas !== floorNow,
+                            cmds: Object.keys(g.state).length });
   })()
 "
 
@@ -138,8 +143,8 @@ echo "$result" | grep -q "NO BRIDGE\|NOT IN NATIVE\|NO RIGGED"
 if [ $? -eq 0 ]; then bad "the bridge reported: $result"; else ok "the page answered: ${result#*SCRIPT RESULT: }"; fi
 echo "$result" | grep -q '"after":[1-9]'
 check $? "a menu command keyed the pose"
-echo "$result" | grep -q '"floor":true'
-check $? "another menu command turned the floor on"
+echo "$result" | grep -q '"flipped":true'
+check $? "another menu command switched the floor"
 
 echo
 echo "── opening a file the way Finder does ──────────────────────────"
