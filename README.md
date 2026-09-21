@@ -14,12 +14,29 @@ It runs entirely on this machine: the Python that comes with macOS, the Blender
 already installed, and a copy of three.js kept in the folder. Nothing to
 install, no account, no internet.
 
+## Two ways to run it
+
+**As a Mac app.** `gerak.app` in `/Applications` — double-click it, or find it
+in Spotlight. Its own window, its own menu bar, a Dock icon. It starts and
+stops its own server; there is no terminal involved. Drop a `.glb` on the
+window, or open one with it from Finder.
+
+```bash
+native/build.sh --install        # build it and put it in /Applications
+native/build.sh --run            # ...and open it
+```
+
+**In a browser**, which is the same thing without the wrapper, and where the
+log is in front of you:
+
 ```bash
 gerak
 ```
 
 That starts it and opens the browser at `http://127.0.0.1:8778`.
 Press `Ctrl-C` in the terminal to stop it.
+
+Your clips and exports go to **`~/Documents/gerak/`** either way.
 
 ---
 
@@ -100,11 +117,17 @@ what you get is exactly what the file did.
 | `Delete` | Remove the key under the playhead |
 | `Esc` | Deselect |
 
+In the app the menu bar has all of these as well, with the usual Mac
+shortcuts: `⌘O` to open a model, `⌘S` to save a clip, `⌘E` to export, `⌘K` to
+key the pose, `⌘B` to bind a skin.
+
 ## Where things are
 
 ```
 server.py          finds your models, serves the page, runs Blender
 blender/worker.py  the jobs Blender does: rigging, .fbx, .blend, video
+native/            the macOS app — one Swift file and a build script
+tools/shot.mjs     takes the pictures in screenshots/
 web/index.html     the page
 web/style.css      the look
 web/scene.js       the viewport — the model, the joint dots, the ring
@@ -112,9 +135,14 @@ web/clip.js        the animation maths — keys, in-betweens, export, playback
 web/ik.js          the IK solver, and finding the limbs on a skeleton
 web/templates.js   the ready-made skeletons, and fitting one to a model
 web/app.js         the wiring between all of those
+tests/             see below
+```
+
+Your own work lives outside the code, in `~/Documents/gerak/`:
+
+```
 clips/             your saved animations, as plain readable JSON
 exports/           the files gerak writes for you
-tests/             see below
 ```
 
 A clip is a small JSON file you can open and read. It names the model it was
@@ -147,6 +175,18 @@ Six suites, in order of how much each one proves:
    formats.
 6. **The rigging flow**, end to end: a model with no skeleton becomes a rigged,
    posed, keyed, IK-driven animation without anybody touching Blender.
+
+And the app has its own suite, which checks only what becoming an application
+added — the things that break at that boundary:
+
+```bash
+tests/native.sh
+```
+
+It builds the app, checks the bundle is the shape macOS expects, starts it,
+watches the server come up on a port the system chose, drives the menu bar
+into the page, force-quits the app to make sure the server does not outlive
+it, and has Finder hand it a `.glb` the way double-clicking one does.
 
 The exported files have also been opened in Blender and checked by hand:
 armature intact, the action on the right bone, the clip the right length, the
@@ -188,3 +228,27 @@ for work that happens once, on a button press:
 Blender runs headless, one process per job, and is told what to do by a JSON
 file. If it is installed somewhere else, set `GERAK_BLENDER` to the path —
 gerak checks on startup and says so on the export panel if it cannot find it.
+
+## The app, and what it adds
+
+The engine is the same: the app loads gerak's own page in a `WKWebView` and
+runs the same Python server, so every test above still applies. What the
+wrapper adds is everything that makes a program an application.
+
+| | |
+|---|---|
+| **Its own window** | Transparent title bar with the page's top bar drawn under it, so there is no second strip of chrome. Comes back the size and place you left it. |
+| **A menu bar** | Every action the page can do, in the place macOS puts it, with the shortcuts it expects. |
+| **Native dialogs** | A `WKWebView` shows *nothing at all* for `alert`, `confirm` and `prompt` unless told how, so gerak's prompts became real Mac sheets. |
+| **Drop a file on it** | JavaScript is given a dropped file's contents but never its path, and gerak works in paths — so the drop is caught in AppKit, where the path still exists. |
+| **Open from Finder** | Registered for `.glb` and `.gltf` as an *alternate* handler: it offers itself in Open With without taking the file type over. |
+| **Remembers** | The window, and the model you had open. |
+| **Starts and stops its server** | On a port the system picks, so the app and a browser gerak can both be open. And the server watches its parent — if the app is force-quit or crashes, the server lets itself out rather than sitting on a port forever. |
+
+There is no Xcode project. `swiftc` comes with the command line tools, and an
+app bundle is a folder with an `Info.plist` in it, so `native/build.sh`
+assembles one in about ten seconds. It is signed ad-hoc, which is all an app
+that never leaves this machine needs.
+
+The log is at `~/Library/Logs/gerak.log`, and the app's own menu has a
+**Show the log** item.

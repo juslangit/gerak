@@ -857,3 +857,47 @@ kbd {
 .rig-note:empty { display: none; }
 .rig-note.is-bad { color: #ffb3b1; }
 .rig-note.is-good { color: var(--ik); }
+
+/* ── inside the macOS app ─────────────────────────────────────────── */
+
+/* The window's title bar is transparent and lies over the page, so the top
+ * bar makes room for the traffic lights rather than hiding behind them. The
+ * app has no separate title strip: the page's own top bar is the title bar,
+ * which is how a Mac app of this kind is put together. */
+.is-native .topbar {
+  padding-left: 92px;
+  -webkit-app-region: drag;
+}
+.is-native .topbar button,
+.is-native .topbar input,
+.is-native .export-pop {
+  -webkit-app-region: no-drag;
+}
+
+/* A file being dragged over the window. */
+.is-dropping::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  border: 3px solid var(--key);
+  background: rgba(245, 165, 36, 0.07);
+  pointer-events: none;
+  z-index: 100;
+}
+.drop-hint {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--bg-panel);
+  border: 1px solid var(--key);
+  border-radius: var(--r-lg);
+  padding: 20px 28px;
+  font-size: 1.05rem;
+  font-weight: 550;
+  color: var(--ink);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  z-index: 101;
+}
+.drop-hint[hidden] { display: none; }

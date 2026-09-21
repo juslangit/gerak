@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  /* Rendered at 1024 and then cut down to every size macOS asks for. */
+  svg { display: block; width: 1024px; height: 1024px; }
+</style>
+</head>
+<body>
+<!--
+  gerak's icon: a chain of joints with a bone between each pair, bent the way
+  an arm bends, over the amber that means "a key is here" everywhere else in
+  the app. The three joints are the three of a limb - shoulder, elbow, hand -
+  which is exactly what the IK solver works on.
+-->
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0"   stop-color="#262b36"/>
+      <stop offset="0.55" stop-color="#191c23"/>
+      <stop offset="1"   stop-color="#101318"/>
+    </linearGradient>
+
+    <linearGradient id="amber" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#ffc766"/>
+      <stop offset="1" stop-color="#f09512"/>
+    </linearGradient>
+
+    <linearGradient id="bone" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0"   stop-color="#ffd089"/>
+      <stop offset="1"   stop-color="#e8890c"/>
+    </linearGradient>
+
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="26" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="lift" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- the plate: a macOS squircle, inset the way the system expects -->
+  <rect x="86" y="86" width="852" height="852" rx="196" ry="196" fill="url(#plate)"/>
+  <rect x="86" y="86" width="852" height="852" rx="196" ry="196"
+        fill="none" stroke="#3a4150" stroke-width="3" opacity="0.65"/>
+
+  <!-- the floor grid, faint, the way it sits under the model in the viewport -->
+  <g opacity="0.16" stroke="#7c8598" stroke-width="3">
+    <path d="M150 760 L874 760"/>
+    <path d="M196 828 L828 828"/>
+    <path d="M300 700 L300 880" opacity="0.6"/>
+    <path d="M512 690 L512 890" opacity="0.6"/>
+    <path d="M724 700 L724 880" opacity="0.6"/>
+  </g>
+
+  <!-- the limb: shoulder, elbow, hand -->
+  <g filter="url(#lift)">
+    <path d="M330 300 L565 470" stroke="url(#bone)" stroke-width="46" stroke-linecap="round" fill="none"/>
+    <path d="M565 470 L690 712" stroke="url(#bone)" stroke-width="46" stroke-linecap="round" fill="none"/>
+  </g>
+
+  <g filter="url(#glow)">
+    <circle cx="330" cy="300" r="78" fill="url(#amber)"/>
+    <circle cx="565" cy="470" r="62" fill="url(#amber)"/>
+    <circle cx="690" cy="712" r="52" fill="url(#amber)"/>
+  </g>
+
+  <!-- the highlight that makes each joint read as a ball rather than a dot -->
+  <circle cx="306" cy="274" r="26" fill="#fff" opacity="0.32"/>
+  <circle cx="548" cy="450" r="20" fill="#fff" opacity="0.26"/>
+  <circle cx="678" cy="696" r="16" fill="#fff" opacity="0.22"/>
+</svg>
+</body>
+</html>

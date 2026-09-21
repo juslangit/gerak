@@ -42,18 +42,33 @@ from urllib.parse import urlparse, parse_qs, unquote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, "web")
-CLIPS = os.path.join(HERE, "clips")
-EXPORTS = os.path.join(HERE, "exports")
-CACHE = os.path.join(HERE, ".library.json")
 BLENDER_DIR = os.path.join(HERE, "blender")
-JOBS = os.path.join(HERE, ".jobs")
+HOME = os.path.expanduser("~")
+
+# Your clips and your exports are your work, not part of the program, so they
+# live where you can find them in Finder rather than inside a project folder -
+# and inside an app bundle they could not be written to at all.
+DATA = os.environ.get("GERAK_DATA") or os.path.join(HOME, "Documents", "gerak")
+CLIPS = os.path.join(DATA, "clips")
+EXPORTS = os.path.join(DATA, "exports")
+CACHE = os.path.join(DATA, ".library.json")
+JOBS = os.path.join(DATA, ".jobs")
+
+READY_MARK = "@@GERAK-READY@@"
 
 BLENDER = os.environ.get(
     "GERAK_BLENDER", "/Applications/Blender.app/Contents/MacOS/Blender")
 
 PORT = int(os.environ.get("GERAK_PORT", "8778"))
+
+# The port actually bound. With GERAK_PORT=0 the system chooses one, so the
+# number gerak was asked for and the number it is listening on are different -
+# and the origin check below compares against the real one. Getting this wrong
+# refused every POST the app made while letting every GET through, which reads
+# like a broken feature rather than a locked door.
+BOUND_PORT = PORT
+
 TOKEN = secrets.token_urlsafe(18)
-HOME = os.path.expanduser("~")
 
 # The only folders gerak will ever read a model out of.
 ROOTS = [
@@ -167,8 +182,29 @@ def get_library(refresh=False):
         return items
 
 
+# Files you opened or dropped by hand this run. The scanned folders cover
+# almost everything, but a model dragged in off a USB stick is not in them,
+# and refusing to open a file you just dropped on the window would be absurd.
+# Nothing gets in here except through a request carrying this run's token,
+# which means through gerak itself.
+PERMITTED = set()
+_permit_lock = threading.Lock()
+
+
+def permit(path):
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return None
+    if not os.path.isfile(real):
+        return None
+    with _permit_lock:
+        PERMITTED.add(real)
+    return real
+
+
 def allowed(path):
-    """True only if this really is a file inside one of the roots.
+    """True only if this really is a file gerak is entitled to read.
 
     realpath first, so a path with .. in it, or a symlink pointing out of the
     folder, is resolved before it is compared - checking the string alone
@@ -180,7 +216,10 @@ def allowed(path):
         return False
     if not os.path.isfile(real):
         return False
-    return any(real.startswith(os.path.realpath(r) + os.sep) for r in ROOTS)
+    if any(real.startswith(os.path.realpath(r) + os.sep) for r in ROOTS):
+        return True
+    with _permit_lock:
+        return real in PERMITTED
 
 
 # --------------------------------------------------------------------------
@@ -290,6 +329,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def handle_one_request(self):
+        """A browser closing a connection is not an error.
+
+        When the app quits, the page's open connections are cut, and the
+        stock handler prints a full traceback for each one. They are noise,
+        and they bury anything that does matter in the log.
+        """
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
+
     # -- guards ------------------------------------------------------------
 
     def authorised(self):
@@ -301,8 +352,8 @@ class Handler(BaseHTTPRequestHandler):
         so the browser would happily send it.
         """
         origin = self.headers.get("Origin")
-        if origin and origin not in ("http://127.0.0.1:%d" % PORT,
-                                     "http://localhost:%d" % PORT):
+        if origin and origin not in ("http://127.0.0.1:%d" % BOUND_PORT,
+                                     "http://localhost:%d" % BOUND_PORT):
             return False
         query = parse_qs(urlparse(self.path).query)
         token = (self.headers.get("X-Gerak-Token")
@@ -393,6 +444,7 @@ class Handler(BaseHTTPRequestHandler):
                 "blender": blender_available(),
                 "blenderPath": BLENDER,
                 "exports": EXPORTS.replace(HOME, "~"),
+                "data": DATA.replace(HOME, "~"),
             })
 
         if path == "/api/library":
@@ -404,6 +456,28 @@ class Handler(BaseHTTPRequestHandler):
             if not allowed(target):
                 return self.send_json({"error": "outside the allowed folders"}, 403)
             return self.send_file(target, "model/gltf-binary")
+
+        if path == "/api/describe":
+            # What the page needs to open a file that is not in the library:
+            # the same row shape the library hands out.
+            target = unquote((query.get("path") or [""])[0])
+            if not allowed(target):
+                return self.send_json({"error": "gerak was not given that file"}, 403)
+            real = os.path.realpath(target)
+            item = {
+                "path": real,
+                "name": os.path.basename(real),
+                "folder": os.path.dirname(real).replace(HOME, "~"),
+                "ext": os.path.splitext(real)[1].lower().lstrip("."),
+                "size": os.path.getsize(real),
+                "mtime": os.path.getmtime(real),
+                "rigged": False, "joints": 0, "anims": 0, "meshes": 0,
+            }
+            if item["ext"] == "glb":
+                summary = glb_summary(real)
+                if summary:
+                    item.update(summary)
+            return self.send_json(item)
 
         if path == "/api/clips":
             return self.send_json({"items": list_clips()})
@@ -422,6 +496,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "not authorised"}, 403)
         path = urlparse(self.path).path
         body = self.read_body()
+
+        if path == "/api/permit":
+            # The app hands over a file you chose or dropped, so the page may
+            # then open it like any other model.
+            wanted = body.get("paths") or ([body.get("path")] if body.get("path") else [])
+            ok, refused = [], []
+            for one in wanted:
+                real = permit(one)
+                (ok if real else refused).append(one)
+            if ok:
+                log("permitted", ", ".join(os.path.basename(p) for p in ok))
+            return self.send_json({"ok": bool(ok), "paths": ok, "refused": refused})
 
         if path == "/api/clip/save":
             name = body.get("name") or "clip"
@@ -522,10 +608,71 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json({"error": "unknown route"}, 404)
 
 
+def migrate_old_data():
+    """Bring across clips written before the data folder moved.
+
+    Up to 2026-09-21 clips and exports were written next to the code. That is
+    the wrong place for your own work, and inside an app bundle it is not even
+    writable, so they moved to ~/Documents/gerak. Anything left behind is
+    carried over once, and the old folder is left alone.
+    """
+    for name, target in (("clips", CLIPS), ("exports", EXPORTS)):
+        old = os.path.join(HERE, name)
+        if not os.path.isdir(old) or os.path.realpath(old) == os.path.realpath(target):
+            continue
+        moved = 0
+        for entry in os.listdir(old):
+            src = os.path.join(old, entry)
+            dst = os.path.join(target, entry)
+            if os.path.isfile(src) and not os.path.exists(dst):
+                shutil.copy2(src, dst)
+                moved += 1
+        if moved:
+            log("brought %d file(s) across from the old %s folder" % (moved, name))
+
+
+def watch_parent():
+    """Stop when whatever started us has gone.
+
+    The app stops the server when it quits, but a force-quit or a crash never
+    reaches that code, and an orphaned server would sit holding a port and a
+    copy of the library forever. So if we were started by something that names
+    itself, we check on it once a second and let ourselves out when it goes.
+    """
+    named = os.environ.get("GERAK_PARENT")
+    if not named or not named.isdigit():
+        log("no parent named, so nothing to watch (started by hand)")
+        return
+    started_under = os.getppid()
+    log("watching parent %s (pid %d)" % (named, started_under))
+
+    def watch():
+        while True:
+            time.sleep(1)
+            # Watch who our parent IS, not whether the old one answers a
+            # signal. A killed process stays in the table as a zombie until
+            # its own parent reaps it, and os.kill(zombie, 0) succeeds - so
+            # asking that way, gerak would happily outlive a force-quit.
+            # When the app goes, this process is handed to launchd instead.
+            if os.getppid() != started_under:
+                # Say so if anything is still listening, but never let that
+                # stop us leaving: our stderr is a pipe to the app that just
+                # died, so writing to it raises and would kill this thread
+                # before it got to the line that matters.
+                try:
+                    log("the app that started gerak has gone; stopping")
+                except Exception:
+                    pass
+                os._exit(0)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def main():
-    for folder in (CLIPS, EXPORTS, JOBS):
+    for folder in (DATA, CLIPS, EXPORTS, JOBS):
         os.makedirs(folder, exist_ok=True)
-    url = "http://127.0.0.1:%d/?t=%s" % (PORT, TOKEN)
+    migrate_old_data()
+
     try:
         server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     except OSError as err:
@@ -534,8 +681,22 @@ def main():
             log("close the other one, or start this with GERAK_PORT=8779 gerak")
             return 1
         raise
+
+    # With GERAK_PORT=0 the system hands out a free port, which is how the
+    # app starts a second gerak without colliding with one in a browser.
+    global BOUND_PORT
+    BOUND_PORT = server.server_address[1]
+    port = BOUND_PORT
+    url = "http://127.0.0.1:%d/?t=%s" % (port, TOKEN)
+
     log("gerak is running")
     log(url)
+    log("your clips and exports are in %s" % DATA.replace(HOME, "~"))
+    # One machine-readable line, for the app that started this process.
+    print("%s%s" % (READY_MARK, json.dumps(
+        {"url": url, "port": port, "token": TOKEN, "data": DATA})), flush=True)
+
+    watch_parent()
     threading.Thread(target=get_library, daemon=True).start()
     if "--no-open" not in sys.argv:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

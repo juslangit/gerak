@@ -21,6 +21,15 @@ import { TEMPLATES, TEMPLATE_ORDER, fitTemplate, guessFacing, headsAndTails }
 const $ = (sel) => document.querySelector(sel);
 const TOKEN = window.GERAK_TOKEN;
 
+/* Running inside the macOS app rather than a browser tab.
+ *
+ * Two things change. The window's own title bar is transparent and sits over
+ * the page, so the top bar needs room for the traffic lights. And the app's
+ * menu bar drives the page from outside, through the commands exposed at the
+ * bottom of this file. */
+const NATIVE = new URLSearchParams(location.search).get('native') === '1';
+if (NATIVE) document.documentElement.classList.add('is-native');
+
 // ── talking to the server ───────────────────────────────────────────
 
 async function api(path, body) {
@@ -89,6 +98,7 @@ async function loadLibrary(refresh = false) {
     const { items } = await api(`/api/library?t=${encodeURIComponent(TOKEN)}${refresh ? '&refresh=1' : ''}`);
     state.library = items;
     renderLibrary();
+    return items;
   } catch (err) {
     $('#library-list').innerHTML = `<p class="hint">Could not read the library: ${err.message}</p>`;
   } finally {
@@ -131,6 +141,16 @@ function renderLibrary() {
   list.querySelectorAll('.row').forEach((row) => {
     row.onclick = () => openModel(shown[+row.dataset.i]);
   });
+}
+
+/* localStorage is not always there - a private window, or storage turned off -
+ * and reading it can throw rather than return nothing, so both directions are
+ * wrapped and the app works the same either way. */
+function remember(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* nothing to do */ }
+}
+function recall(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
 }
 
 function escapeHTML(s) {
@@ -182,6 +202,8 @@ async function openModel(item) {
     renderTracks();
     offerSourceClips(info.clips);
 
+    remember('gerak.lastModel', item.path);
+    document.title = `${item.name} — gerak`;
     toast(`${item.name} is open — click a joint to start.`);
   } catch (err) {
     console.error(err);
@@ -269,6 +291,33 @@ function paintBoneTree() {
     el.classList.toggle('is-on', name === sel);
     el.classList.toggle('has-keys', state.clip.tracks.has(name));
   });
+}
+
+/**
+ * Open a file by its path on disk, wherever it is.
+ *
+ * The library only knows the folders gerak scans. A file dropped on the
+ * window, chosen in the app's Open dialog, or handed over by Finder may be
+ * anywhere, so it is first permitted - which only something holding this
+ * run's token can do - and then described in the same shape a library row
+ * has, so from here on it is an ordinary model.
+ */
+async function openPath(path) {
+  try {
+    const permitted = await api('/api/permit', { path });
+    if (!permitted.ok) throw new Error('that file could not be read');
+    const item = await api(
+      `/api/describe?t=${encodeURIComponent(TOKEN)}&path=${encodeURIComponent(path)}`);
+    if (item.ext && !['glb', 'gltf'].includes(item.ext)) {
+      toast(`gerak opens .glb and .gltf for now — ${item.name} is a .${item.ext}.`, true);
+      return false;
+    }
+    await openModel(item);
+    return true;
+  } catch (err) {
+    toast(`Could not open that file: ${err.message}`, true);
+    return false;
+  }
 }
 
 // ── putting a skeleton on a model that has none ─────────────────────
@@ -1065,8 +1114,44 @@ window.addEventListener('beforeunload', (e) => {
 
 /* One handle on the whole app, for the tests that drive it in a real browser
  * and for poking at it from the browser console when something looks wrong. */
+/* What the macOS menu bar drives.
+ *
+ * Every one of these is the same thing a click would do, so there is one
+ * implementation of each action and the menu is only another way of reaching
+ * it. Anything the menu cannot do, the page cannot do either. */
+const COMMANDS = {
+  save: () => $('#btn-save').click(),
+  export: () => { $('#export-pop').hidden = false; $('#btn-export-go').focus(); },
+  exportNow: () => $('#btn-export-go').click(),
+  key: () => keyPose(),
+  unkey: () => removeKeyHere(),
+  play: () => $('#tp-play').click(),
+  start: () => setFrame(0),
+  end: () => setFrame(state.clip.frames),
+  nextKey: () => stepKey(1),
+  prevKey: () => stepKey(-1),
+  rotate: () => document.querySelector('[data-gizmo="rotate"]').click(),
+  move: () => document.querySelector('[data-gizmo="translate"]').click(),
+  skeleton: () => $('#toggle-skeleton').click(),
+  mesh: () => $('#toggle-mesh').click(),
+  floor: () => $('#toggle-ground').click(),
+  reset: () => $('#btn-reset-joint').click(),
+  mirror: () => $('#btn-mirror').click(),
+  place: () => { if (!$('#rig-box').hidden) $('#btn-place').click(); },
+  bind: () => { if (!$('#btn-bind').hidden) $('#btn-bind').click(); },
+  rescan: () => loadLibrary(true),
+  deselect: () => view.select(null),
+};
+
+function command(name) {
+  const fn = COMMANDS[name];
+  if (!fn) return false;
+  fn();
+  return true;
+}
+
 window.gerak = {
-  state, view, player, api,
+  state, view, player, api, command, openPath, native: NATIVE,
   openModel, keyPose, setFrame, renderTracks, loadLibrary,
   renderLimbs, setChainMode, togglePin, applyPins,
   placeSkeleton, showRigPanel, setFacing,
@@ -1074,7 +1159,24 @@ window.gerak = {
 
 // ── go ──────────────────────────────────────────────────────────────
 
-loadLibrary();
+/* Come back to the model you were working on.
+ *
+ * Only after the library has loaded, and only if the file is still there -
+ * a model that has since been moved or deleted should leave you at the list,
+ * not at an error. */
+async function reopenLast() {
+  const last = recall('gerak.lastModel');
+  if (!last) return;
+  const item = state.library.find((i) => i.path === last);
+  if (item) { await openModel(item); return; }
+  try {
+    const found = await api(
+      `/api/describe?t=${encodeURIComponent(TOKEN)}&path=${encodeURIComponent(last)}`);
+    if (found && found.path) await openModel(found);
+  } catch { /* it has moved or gone; leave the list showing */ }
+}
+
+loadLibrary().then(reopenLast);
 loadClips();
 renderRuler();
 

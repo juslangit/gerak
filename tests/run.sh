@@ -57,5 +57,10 @@ run "the rigging flow, end to end" \
   node tests/run-browser.mjs "$BASE/?t=$TOKEN" tests/rigflow.smoke.mjs
 
 echo
+echo "── the macOS app ───────────────────────────────────────────────"
+echo "run tests/native.sh for the app; it builds and launches it, which"
+echo "takes about a minute and opens windows, so it is kept separate."
+
+echo
 [ $FAILED -eq 0 ] && echo "everything green" || echo "something failed"
 exit $FAILED
