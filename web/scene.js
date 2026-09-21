@@ -481,6 +481,9 @@ export class Viewport {
    */
   buildDraft(placed) {
     this.clearDraft();
+    // The limbs of whatever was open before are gone, so their handles must
+    // go too, or a green diamond is left hanging in the air driving nothing.
+    this.clearHandles();
     this.draftRoot = new THREE.Group();
     this.scene.add(this.draftRoot);
 

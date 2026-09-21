@@ -104,11 +104,6 @@
 
   <!-- ── right: the skeleton ──────────────────────────────────────── -->
   <aside class="panel panel-right">
-    <h2 class="panel-title">Skeleton</h2>
-    <div class="tree" id="bone-tree">
-      <p class="hint">Open a model to see its joints.</p>
-    </div>
-
     <div class="rigbox" id="rig-box" hidden>
       <h2 class="panel-title">This model has no skeleton</h2>
       <p class="rig-lead">
@@ -139,6 +134,11 @@
       <p class="rig-note" id="rig-status"></p>
     </div>
 
+    <h2 class="panel-title">Skeleton</h2>
+    <div class="tree" id="bone-tree">
+      <p class="hint">Open a model to see its joints.</p>
+    </div>
+
     <div class="limbs" id="limbs-box" hidden>
       <h2 class="panel-title">Limbs</h2>
       <div class="limb-list" id="limb-list"></div>
@@ -160,7 +160,7 @@
       </div>
       <div class="selected-actions">
         <button class="btn btn-small" id="btn-reset-joint">Reset joint</button>
-        <button class="btn btn-small" id="btn-mirror">Copy to other side</button>
+        <button class="btn btn-small" id="btn-mirror" title="Copy this joint's rotation onto the matching joint on the other side">Mirror pose</button>
       </div>
       <button class="btn btn-small btn-wide" id="btn-make-chain">Make an IK chain from here</button>
     </div>

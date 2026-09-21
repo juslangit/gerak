@@ -48,7 +48,7 @@ export const TEMPLATES = {
   // ── a person ──────────────────────────────────────────────────────
   biped: {
     label: 'Human',
-    note: 'A standing person, facing forward. 23 joints.',
+    note: 'A standing person, facing forward.',
     forward: '+Z',
     joints: [
       j('Hips', null, 0, 0.530, 0),
@@ -76,7 +76,7 @@ export const TEMPLATES = {
   quadruped: {
     elongated: true,
     label: 'Four-legged animal',
-    note: 'A dog, cat or horse standing on all fours, nose toward the front. 27 joints.',
+    note: 'A dog, cat or horse standing on all fours, nose toward the front.',
     forward: '+Z',
     joints: [
       j('Hips', null, 0, 0.620, -0.290),
@@ -106,7 +106,7 @@ export const TEMPLATES = {
   // ── a bird ────────────────────────────────────────────────────────
   bird: {
     label: 'Bird',
-    note: 'Wings folded along the body, standing. 21 joints.',
+    note: 'Wings folded along the body, standing.',
     forward: '+Z',
     joints: [
       j('Hips', null, 0, 0.480, -0.060),
@@ -133,7 +133,7 @@ export const TEMPLATES = {
   fish: {
     elongated: true,
     label: 'Fish',
-    note: 'A spine from nose to tail, with fins. 13 joints.',
+    note: 'A spine from nose to tail, with fins.',
     forward: '+Z',
     joints: [
       j('Root', null, 0, 0.500, 0.100),
@@ -156,7 +156,7 @@ export const TEMPLATES = {
   serpent: {
     elongated: true,
     label: 'Snake or tail',
-    note: 'One long chain of 12 joints, nose to tail. Also right for a rope or a tentacle.',
+    note: 'One long chain, nose to tail. Also right for a rope or a tentacle.',
     forward: '+Z',
     joints: (() => {
       const out = [j('Head', null, 0, 0.500, 0.480)];

@@ -71,6 +71,9 @@ const kb = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round
 function prettyBone(name) {
   return name
     .replace(/^(mixamorig|Bip\d*|Armature)[:_|]?/i, '')
+    // Meshy hangs a node number on the end of every bone - "Hips_34". It is
+    // meaningless to read and it is not part of the name, so it goes.
+    .replace(/[_.]\d+$/, '')
     .replace(/[_.]/g, ' ')
     .replace(/\b(l|left)\b/i, 'L')
     .replace(/\b(r|right)\b/i, 'R')
@@ -277,7 +280,7 @@ function showRigPanel(on) {
   $('#rig-box').hidden = !on;
   if (!on) return;
   $('#rig-template').value = state.rig.template;
-  $('#rig-template-note').textContent = TEMPLATES[state.rig.template].note;
+  showTemplateNote();
   $('#btn-bind').hidden = true;
   $('#rig-status').textContent = '';
   $('#rig-status').className = 'rig-note';
@@ -290,9 +293,16 @@ function setFacing(deg) {
     b.classList.toggle('is-on', +b.dataset.facing === deg));
 }
 
+/* The joint count is counted, never written down. A hand-written "23 joints"
+ * in a note is wrong the moment a joint is added to the template. */
+function showTemplateNote() {
+  const tpl = TEMPLATES[state.rig.template];
+  $('#rig-template-note').textContent = `${tpl.note} ${tpl.joints.length} joints.`;
+}
+
 $('#rig-template').onchange = (e) => {
   state.rig.template = e.target.value;
-  $('#rig-template-note').textContent = TEMPLATES[state.rig.template].note;
+  showTemplateNote();
   if (state.model) setFacing(guessFacing(state.rig.template, view.modelBox()));
   if (view.hasDraft) placeSkeleton();
 };
@@ -1057,7 +1067,7 @@ window.addEventListener('beforeunload', (e) => {
  * and for poking at it from the browser console when something looks wrong. */
 window.gerak = {
   state, view, player, api,
-  openModel, keyPose, setFrame, renderTracks,
+  openModel, keyPose, setFrame, renderTracks, loadLibrary,
   renderLimbs, setChainMode, togglePin, applyPins,
   placeSkeleton, showRigPanel, setFacing,
 };
