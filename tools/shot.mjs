@@ -24,7 +24,7 @@ const token = process.argv[2];
 const port = process.argv[3] || '8778';
 if (!token) { console.error('usage: node tools/shot.mjs <token> [port]'); process.exit(2); }
 
-const W = 1600, H = 1000;
+const W = Number(process.argv[4]) || 1600, H = Number(process.argv[5]) || 1000;
 const debugPort = 9500 + Math.floor(Math.random() * 300);
 const profile = mkdtempSync(join(tmpdir(), 'gerak-shot-'));
 

@@ -61,6 +61,8 @@ run "the rigging flow, end to end" \
 find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'test-*-rigged.glb' -delete 2>/dev/null
 find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'crowd_a_stand-rigged.*' -delete 2>/dev/null
 find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'player.*' -delete 2>/dev/null
+# and drop the cached library, or the next run is offered files that have gone
+rm -f "$HOME/Documents/gerak/.library.json" 2>/dev/null
 
 echo
 echo "── the macOS app ───────────────────────────────────────────────"

@@ -98,10 +98,16 @@ try {
   say(status.classList.contains('is-good'), status.textContent.split('\n')[0]);
   if (!status.classList.contains('is-good')) throw new Error('binding failed');
 
-  // ── what came back is a real, animatable rig ──────────────────────
-  await until('the rigged model', () => g.state.bones.length > 0);
+  /* ── what came back is a real, animatable rig ──────────────────────
+   *
+   * Wait for the skin, not for the bones. The status line is written before
+   * the rigged file is opened, and until that finishes the bones still
+   * belong to the draft skeleton - which has exactly the same 25 names, so
+   * every name check passes while nothing has actually been loaded. */
+  await until('the rigged model to open', () => g.view.skinned.length > 0, 60000);
   say(g.view.skinned.length > 0,
     `the rigged model came back with ${g.view.skinned.length} skinned mesh(es)`);
+  say(!g.view.hasDraft, 'and the draft skeleton was put away');
 
   const gotNames = new Set(g.state.bones.map((b) => b.name));
   const missing = askedFor.filter((n) => !gotNames.has(n));

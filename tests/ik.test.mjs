@@ -10,7 +10,7 @@
  */
 
 import * as THREE from 'three';
-import { IKChain, detectLimbs, chainFrom } from '../web/ik.js';
+import { IKChain, detectLimbs, chainFrom, mirrorName, findMirror } from '../web/ik.js';
 
 let passed = 0, failed = 0;
 const results = [];
@@ -334,6 +334,60 @@ test('a limb reports how far it can reach', () => {
   const chain = new IKChain(arm.bones, 'Left arm');
   const reach = chain.reach();
   assert(Math.abs(reach - 2) < 1e-6, `expected a reach of 2, got ${reach}`);
+});
+
+// ── finding the other side of the body ──────────────────────────────
+
+test('a side word is swapped, keeping its capitalisation', () => {
+  const cases = [
+    ['LeftArm', 'RightArm'],
+    ['RightArm', 'LeftArm'],
+    ['mixamorigLeftHand_12', 'mixamorigRightHand_12'],
+    ['hand_left', 'hand_right'],
+    ['LeftUpLeg', 'RightUpLeg'],
+  ];
+  for (const [from, to] of cases) {
+    const got = mirrorName(from);
+    assert(got === to, `${from} should mirror to ${to}, got ${got}`);
+  }
+});
+
+test('swapping happens in one pass, or a name would come back unchanged', () => {
+  // Replace Left with Right and then Right with Left and you are back where
+  // you started - which is the bug this is here to catch.
+  assert(mirrorName('LeftHandRight') === 'RightHandLeft',
+    `got ${mirrorName('LeftHandRight')}`);
+});
+
+test('the .L and _R conventions swap too', () => {
+  assert(mirrorName('hand.L') === 'hand.R', `got ${mirrorName('hand.L')}`);
+  assert(mirrorName('Bip01_R_Hand') === 'Bip01_L_Hand', `got ${mirrorName('Bip01_R_Hand')}`);
+});
+
+test('a joint with no side is left alone', () => {
+  for (const name of ['Hips', 'Spine', 'Head', 'mixamorigSpine1_4']) {
+    assert(mirrorName(name) === name, `${name} should not have a side`);
+  }
+});
+
+test('the opposite joint is found even when the two carry different numbers', () => {
+  /* This is the case that matters, and the one the old code could not do.
+   * Meshy hangs a node index on every bone, and the index on the left arm is
+   * not the index on the right arm - so a straight name swap produces a name
+   * that does not exist anywhere on the model. */
+  const names = ['mixamorigHips_34', 'mixamorigLeftArm_29', 'mixamorigRightArm_14',
+                 'mixamorigLeftHand_12', 'mixamorigRightHand_7'];
+  assert(findMirror('mixamorigLeftArm_29', names) === 'mixamorigRightArm_14',
+    `got ${findMirror('mixamorigLeftArm_29', names)}`);
+  assert(findMirror('mixamorigRightHand_7', names) === 'mixamorigLeftHand_12',
+    `got ${findMirror('mixamorigRightHand_7', names)}`);
+});
+
+test('a joint with no opposite number reports none rather than itself', () => {
+  const names = ['Hips', 'Spine', 'LeftArm'];
+  assert(findMirror('Hips', names) === null, 'Hips should have no opposite');
+  assert(findMirror('LeftArm', names) === null,
+    'there is no RightArm on this model, so there is no opposite');
 });
 
 console.log('\ngerak — inverse kinematics\n');

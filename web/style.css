@@ -139,7 +139,7 @@ kbd {
 }
 .btn-primary:hover:not(:disabled) { background: #ffb43d; border-color: #ffb43d; }
 
-.btn-small { padding: 8px 13px; font-size: 0.88rem; }
+.btn-small { padding: 8px 11px; font-size: 0.88rem; white-space: nowrap; }
 
 .icon-btn {
   font: inherit;
@@ -483,10 +483,14 @@ kbd {
 
 /* ── timeline ─────────────────────────────────────────────────────── */
 
+/* The bar of controls wraps onto a second row in a narrow window, so the
+ * timeline is as tall as its contents rather than a fixed height — and the
+ * workspace above is told how much room to leave. Otherwise a wrap eats the
+ * track area and the keys disappear off the bottom. */
 .timeline {
   position: absolute;
   left: 0; right: 0; bottom: 0;
-  height: var(--timeline-h);
+  height: auto;
   background: var(--bg-panel);
   border-top: 1px solid var(--line);
   display: flex;
@@ -496,8 +500,8 @@ kbd {
 .transport {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 18px;
+  gap: 9px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--line-soft);
   flex: none;
   flex-wrap: wrap;
@@ -512,7 +516,7 @@ kbd {
   background: var(--bg-raised);
   border: 1px solid var(--line);
   border-radius: var(--r);
-  width: 44px; height: 40px;
+  width: 42px; height: 40px;
   cursor: pointer;
 }
 .tp:hover { color: var(--ink); background: #2e333e; }
@@ -536,7 +540,7 @@ kbd {
 }
 .frame-readout input,
 .fps input {
-  width: 64px;
+  width: 58px;
   font: inherit;
   font-size: 0.92rem;
   color: var(--ink);
@@ -566,7 +570,7 @@ kbd {
   flex: 1;
   overflow: hidden;
   background: var(--bg-sunken);
-  min-height: 0;
+  min-height: 146px;
 }
 
 .ruler {
@@ -905,7 +909,7 @@ kbd {
 /* ── undo and redo ────────────────────────────────────────────────── */
 
 .tp-history {
-  width: 42px;
+  width: 38px;
   height: 38px;
   font-size: 1.32rem;
   font-weight: 500;
@@ -922,3 +926,15 @@ kbd {
 .tp-history:not(:disabled) { color: var(--ink); }
 #btn-undo { margin-left: 6px; }
 #btn-redo { margin-right: 6px; }
+
+/* ── a narrow window ──────────────────────────────────────────────── */
+
+@media (max-width: 1280px) {
+  .transport { gap: 7px; padding: 10px 12px; }
+  .transport .unit,
+  .transport .fps { font-size: 0; }        /* the words "frames" and "fps" */
+  .transport .fps input { font-size: 0.92rem; }
+  .btn-small { padding: 8px 9px; }
+  .tp { width: 38px; height: 38px; }
+  .frame-readout input, .fps input { width: 52px; }
+}

@@ -308,6 +308,87 @@ try {
   while (h.canRedo && guard++ < 60) h.redo();
   say(g.state.clip.totalKeys() > 0, `redoing it all brings the work back (${g.state.clip.totalKeys()} keys)`);
 
+  // ── copy and paste ────────────────────────────────────────────────
+  g.setFrame(0);
+  const poseHere = g.state.clip.poseAt(0);
+  say(poseHere.length > 0, `there is a pose at frame 0 across ${poseHere.length} joint(s)`);
+
+  g.copyKeys();
+  say(!!g.clipboard && g.clipboard.entries.length === poseHere.length,
+    `copied ${g.clipboard ? g.clipboard.label : 'nothing'}`);
+  say(!document.querySelector('#btn-paste').disabled, 'the Paste button woke up');
+
+  // Paste it somewhere empty and check the pose really lands there.
+  g.setFrame(44);
+  const before44 = g.state.clip.totalKeys();
+  g.pasteKeys();
+  say(g.state.clip.totalKeys() > before44,
+    `pasting at frame 44 added ${g.state.clip.totalKeys() - before44} key(s)`);
+
+  const sourcePose = g.state.clip.sample(poseHere[0].name, 0);
+  const pastedPose = g.state.clip.sample(poseHere[0].name, 44);
+  say(1 - Math.abs(sourcePose.q.dot(pastedPose.q)) < 1e-9,
+    'and frame 44 now holds exactly the pose that was at frame 0');
+
+  // Undo has to reach a paste like anything else.
+  g.undo();
+  say(g.state.clip.totalKeys() === before44, 'undo took the pasted keys away again');
+  g.redo();
+
+  // ── pasting flipped: the thing walk cycles are made of ────────────
+  /* Ask the app which joint is the opposite number rather than guessing by
+   * swapping the word, because on a Meshy rig the two sides carry different
+   * node numbers and a guessed name exists nowhere. */
+  const names = g.state.bones.map((b) => b.name);
+  const leftName = g.state.bones.find((b) => /Left(Arm|UpLeg)/.test(b.name))?.name;
+  const rightName = leftName && g.mirrorOf(leftName, names);
+  say(!!rightName, `the opposite of ${leftName} is ${rightName || 'NOT FOUND'}`);
+  if (leftName && rightName) {
+    g.setFrame(0);
+    const leftJoint = g.state.bones.find((b) => b.name === leftName);
+    g.view.onDragStart(leftJoint);
+    leftJoint.rotation.z += 0.6;
+    g.keyPose(0);
+    g.copyKeys();
+
+    g.setFrame(46);
+    g.pasteKeys({ flipped: true });
+    const source = g.state.clip.sample(leftName, 0);
+    const landed = g.state.clip.sample(rightName, 46);
+    say(!!landed, `a pose copied from ${leftName} landed on ${rightName} when pasted flipped`);
+    if (landed) {
+      // Flipping negates the y and z of the rotation; that is the whole trick.
+      const want = [source.q.x, -source.q.y, -source.q.z, source.q.w];
+      const dot = Math.abs(landed.q.x * want[0] + landed.q.y * want[1]
+                         + landed.q.z * want[2] + landed.q.w * want[3]);
+      say(dot > 0.9999, `and it arrived mirrored, not copied (match ${dot.toFixed(6)})`);
+    }
+  }
+
+  // ── picking keys out on the timeline ──────────────────────────────
+  g.setFrame(0);
+  const trackName = g.state.clip.keyedNames()[0];
+  const firstKey = g.state.clip.keysOf(trackName)[0];
+  g.state.picked = [{ name: trackName, f: firstKey.f }];
+  g.renderTracks();
+  say(document.querySelectorAll('#tracks .keyd.is-on').length === 1,
+    'a picked key is drawn differently from the rest');
+  // The label stays put - a button that changes width pushes the row of
+  // controls onto a second line in a narrow window - so what it will copy is
+  // in the tooltip.
+  say(/1 picked key/.test(document.querySelector('#btn-copy').title),
+    `and the Copy button says what it will copy: "${document.querySelector('#btn-copy').title}"`);
+
+  g.copyKeys();
+  say(g.clipboard.entries.length === 1, 'copying with a key picked takes just that key');
+
+  const pickedGone = g.state.clip.keysOf(trackName).length;
+  g.state.picked = [{ name: trackName, f: firstKey.f }];
+  g.command('unkey');
+  say(g.state.clip.keysOf(trackName).length === pickedGone - 1,
+    'and Delete removes the picked key rather than whatever is under the playhead');
+  g.undo();
+
   // ── export: .glb here, the rest through Blender ───────────────────
   const caps = await g.api(`/api/capabilities?t=${encodeURIComponent(window.GERAK_TOKEN)}`);
   say(true, `Blender ${caps.blender ? 'found' : 'NOT found'} at ${caps.blenderPath}`);

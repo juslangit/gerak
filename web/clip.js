@@ -138,6 +138,35 @@ export class Clip {
   }
 
   /**
+   * The whole pose at a frame: every joint this clip drives, and where it is.
+   *
+   * Sampled rather than read straight off the keys, so a frame with no key on
+   * it still gives back the pose you can see — which is what copying a pose
+   * has to mean, or copying would only work on frames that already had keys.
+   */
+  poseAt(frame) {
+    const out = [];
+    for (const name of this.tracks.keys()) {
+      const posed = this.sample(name, frame);
+      if (posed) out.push({ name, q: posed.q.toArray(), p: posed.p.toArray() });
+    }
+    return out;
+  }
+
+  /** Put a key back from plain numbers, the way a copied one is stored. */
+  setKeyValues(name, frame, q, p) {
+    frame = Math.round(frame);
+    let track = this.tracks.get(name);
+    if (!track) { track = []; this.tracks.set(name, track); }
+    const key = { f: frame, q: q.slice(), p: p.slice() };
+    const at = track.findIndex((k) => k.f === frame);
+    if (at >= 0) track[at] = key;
+    else { track.push(key); track.sort((a, b) => a.f - b.f); }
+    this.dirty = true;
+    return key;
+  }
+
+  /**
    * Put every bone where this clip says it should be at `frame`.
    * A bone with no keys goes back to the pose the file arrived in, so an arm
    * you never touched stays exactly as the model was built.

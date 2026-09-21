@@ -114,12 +114,27 @@ echo "── the menu bar reaches the page ────────────�
 
 run_app 9 --js "
   return (async () => {
+    // Answer gerak's own prompts before they are asked. In the app these
+    // become real Mac sheets, and a pending confirm() blocks every bit of
+    // JavaScript on the page - including the rest of this script - until
+    // somebody clicks a button, which in an automated run nobody will.
+    window.confirm = () => false;
+    window.prompt = () => null;
+
     const g = window.gerak;
     if (!g) return 'NO BRIDGE';
     if (!g.native) return 'NOT IN NATIVE MODE';
-    const pick = g.state.library.find(i => i.rigged && i.joints >= 20 && i.size < 12e6);
+    // Wait for the library rather than assuming it has arrived: the scan
+    // takes a couple of seconds and a fixed delay is a coin toss.
+    for (let i = 0; i < 200 && !g.state.library.length; i++) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+    // Not one of gerak's own exports: those are test output and come and go.
+    const pick = g.state.library.find(i => i.rigged && i.joints >= 20 && i.size < 12e6
+      && !i.path.includes('/gerak/exports/'));
     if (!pick) return 'NO RIGGED MODEL';
     await g.openModel(pick);
+    if (!g.state.bones.length) return 'OPENED BUT NO BONES: ' + pick.name;
     const bone = g.state.bones.find(b => /Arm|Leg/.test(b.name)) || g.state.bones[1];
     g.view.select(bone);
     bone.rotation.z += 0.5;
@@ -139,7 +154,7 @@ run_app 9 --js "
 
 grep -q "SCRIPT RESULT" "$LOG"; check $? "the app can run script in the page"
 result=$(grep "SCRIPT RESULT" "$LOG" | tail -1)
-echo "$result" | grep -q "NO BRIDGE\|NOT IN NATIVE\|NO RIGGED"
+echo "$result" | grep -q "NO BRIDGE\|NOT IN NATIVE\|NO RIGGED\|NO BONES"
 if [ $? -eq 0 ]; then bad "the bridge reported: $result"; else ok "the page answered: ${result#*SCRIPT RESULT: }"; fi
 echo "$result" | grep -q '"after":[1-9]'
 check $? "a menu command keyed the pose"
@@ -156,6 +171,12 @@ if [ -f "$MODEL" ]; then
   MODEL_JS=$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$MODEL")
   run_app 9 --js "
     return (async () => {
+      window.confirm = () => false;
+      window.prompt = () => null;
+      const g = window.gerak;
+      for (let i = 0; i < 200 && !g.state.library.length; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
       const ok = await window.gerak.openPath($MODEL_JS);
       return JSON.stringify({ ok, open: window.gerak.state.model && window.gerak.state.model.name,
                               joints: window.gerak.state.bones.length });

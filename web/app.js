@@ -14,7 +14,7 @@ import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/GLTFExporter.js';
 import { Viewport } from '/web/scene.js';
 import { Clip, Player } from '/web/clip.js';
-import { detectLimbs, chainFrom } from '/web/ik.js';
+import { detectLimbs, chainFrom, findMirror } from '/web/ik.js';
 import { TEMPLATES, TEMPLATE_ORDER, fitTemplate, guessFacing, headsAndTails }
   from '/web/templates.js';
 import { History } from '/web/history.js';
@@ -56,6 +56,7 @@ const state = {
   frame: 0,
   chains: [],           // the limbs, each either FK or IK
   rig: { template: 'biped', facing: 0, flip: false },
+  picked: [],           // keys picked out on the timeline: { name, f }
 };
 
 const view = new Viewport($('#viewport'));
@@ -157,6 +158,156 @@ function redo() {
 
 $('#btn-undo').onclick = undo;
 $('#btn-redo').onclick = redo;
+
+/* Copy and paste.
+ *
+ * Two different things get copied depending on what you have picked out, and
+ * the difference is worth stating because it decides what paste does:
+ *
+ *   nothing picked   the whole pose at the playhead, sampled — so a frame
+ *                    with no key on it still copies, which is what "copy the
+ *                    pose" has to mean
+ *   keys picked      exactly those keys, keeping the gaps between them
+ *
+ * Either way what is stored is joint names and rotations, not frame numbers,
+ * so a pose copied off one character pastes onto another with the same rig —
+ * which is most of his, because they came out of the same generator.
+ *
+ * Paste anchors at the playhead: the earliest thing copied lands there and
+ * everything else keeps its distance from it.
+ */
+
+const CLIPBOARD_KEY = 'gerak.clipboard';
+let clipboard = null;
+
+function rememberClipboard() {
+  try { localStorage.setItem(CLIPBOARD_KEY, JSON.stringify(clipboard)); } catch { /* fine */ }
+}
+
+function recallClipboard() {
+  try {
+    const stored = localStorage.getItem(CLIPBOARD_KEY);
+    if (stored) clipboard = JSON.parse(stored);
+  } catch { clipboard = null; }
+}
+
+/** The other side of the body, and the rotation that goes with it. */
+function flipEntry(entry, names) {
+  return {
+    // A joint with no opposite number - a spine, a head - keeps its own name
+    // and is simply mirrored in place, which is what a centre joint should do.
+    name: findMirror(entry.name, names) || entry.name,
+    offset: entry.offset,
+    // A rig puts the two sides of a body at mirrored positions along X, so
+    // flipping the sign of the Y and Z parts of a rotation is the right
+    // answer for the great majority of them. Same caveat as the Mirror
+    // button: look at the result.
+    q: [entry.q[0], -entry.q[1], -entry.q[2], entry.q[3]],
+    p: [-entry.p[0], entry.p[1], entry.p[2]],
+  };
+}
+
+function copyKeys() {
+  if (!state.bones.length) return;
+
+  let entries;
+  let label;
+
+  if (state.picked.length) {
+    const earliest = Math.min(...state.picked.map((k) => k.f));
+    entries = state.picked.map(({ name, f }) => {
+      const key = state.clip.keysOf(name).find((k) => k.f === f);
+      return key && { name, offset: f - earliest, q: key.q.slice(), p: key.p.slice() };
+    }).filter(Boolean);
+    label = `${entries.length} key${entries.length === 1 ? '' : 's'}`;
+  } else {
+    const frame = Math.round(state.frame);
+    entries = state.clip.poseAt(frame).map((posed) => ({ ...posed, offset: 0 }));
+    label = `the pose at frame ${frame}`;
+  }
+
+  if (!entries.length) {
+    toast('Nothing to copy — key a pose first.');
+    return;
+  }
+
+  clipboard = {
+    label,
+    from: state.model ? state.model.name : '',
+    joints: new Set(entries.map((e) => e.name)).size,
+    span: Math.max(...entries.map((e) => e.offset)),
+    entries,
+  };
+  rememberClipboard();
+  paintClipboard();
+  toast(`Copied ${label} — ${clipboard.joints} joint${clipboard.joints === 1 ? '' : 's'}.`);
+}
+
+function pasteKeys({ flipped = false } = {}) {
+  if (!clipboard || !clipboard.entries.length) { toast('Nothing has been copied yet.'); return; }
+  if (!state.bones.length) return;
+
+  const at = Math.round(state.frame);
+  const here = new Set(state.bones.map((b) => b.name));
+  const names = [...here];
+  const landing = (flipped ? clipboard.entries.map((e) => flipEntry(e, names)) : clipboard.entries)
+    .filter((entry) => here.has(entry.name));
+
+  if (!landing.length) {
+    toast(flipped
+      ? 'None of those joints have an opposite number on this model.'
+      : `None of those joints are on this model — it was copied from ${clipboard.from}.`, true);
+    return;
+  }
+
+  history.push(`pasting ${clipboard.label}${flipped ? ', flipped' : ''}`);
+
+  for (const entry of landing) {
+    state.clip.setKeyValues(entry.name, at + entry.offset, entry.q, entry.p);
+  }
+
+  // A paste that runs past the end of the clip lengthens it rather than
+  // dropping the keys off the end where they cannot be seen.
+  const last = at + clipboard.span;
+  if (last > state.clip.frames) {
+    state.clip.frames = last;
+    $('#length-field').value = last;
+  }
+
+  state.picked = [];
+  setFrame(at);
+  renderTracks();
+  paintBoneTree();
+  markDirty();
+
+  const skipped = clipboard.entries.length - landing.length;
+  toast(`Pasted ${landing.length} key${landing.length === 1 ? '' : 's'} at frame ${at}`
+    + (flipped ? ', flipped' : '')
+    + (skipped ? ` — ${skipped} joint${skipped === 1 ? '' : 's'} not on this model` : '') + '.');
+}
+
+/** Keep the three buttons saying what they will actually do. */
+function paintClipboard() {
+  const copy = $('#btn-copy');
+  const paste = $('#btn-paste');
+  const flip = $('#btn-paste-flip');
+
+  copy.title = state.picked.length
+    ? `Copy the ${state.picked.length} picked key${state.picked.length === 1 ? '' : 's'}`
+    : `Copy the pose at frame ${Math.round(state.frame)}`;
+
+  const has = !!(clipboard && clipboard.entries.length);
+  paste.disabled = !has;
+  flip.disabled = !has;
+  paste.title = has ? `Paste ${clipboard.label} at this frame` : 'Nothing has been copied yet';
+  flip.title = has
+    ? `Paste ${clipboard.label} with left and right swapped`
+    : 'Nothing has been copied yet';
+}
+
+$('#btn-copy').onclick = () => copyKeys();
+$('#btn-paste').onclick = () => pasteKeys();
+$('#btn-paste-flip').onclick = () => pasteKeys({ flipped: true });
 
 // ── little helpers ──────────────────────────────────────────────────
 
@@ -294,6 +445,7 @@ async function openModel(item) {
     }
 
     history.clear();
+    state.picked = [];
     state.chains = boneless ? [] : detectLimbs(state.bones);
     renderBoneTree();
     renderLimbs();
@@ -306,7 +458,14 @@ async function openModel(item) {
     toast(`${item.name} is open — click a joint to start.`);
   } catch (err) {
     console.error(err);
-    toast(`Could not open ${item.name}: ${err.message}`, true);
+    /* The list is built from a scan that may be up to an hour old, so a row
+     * can outlive the file it names — move a model in Finder and gerak would
+     * offer you something that is no longer there. Rather than leave a dead
+     * row to be clicked again, scan afresh and say so. */
+    toast(`Could not open ${item.name} — it may have moved. Scanning again…`, true);
+    const found = await loadLibrary(true);
+    const still = found && found.some((i) => i.path === item.path);
+    if (!still) toast(`${item.name} is no longer where it was; the list is up to date now.`, true);
   }
   renderLibrary();
 }
@@ -776,6 +935,21 @@ function removeKeyHere() {
 
   // Same again: find the keys first, so pressing Delete on a frame with none
   // does not become a step you have to undo past.
+  // Keys picked out on the timeline win: they are an explicit choice, where
+  // the playhead is only where you happen to be standing.
+  if (state.picked.length) {
+    const picked = state.picked.slice();
+    history.push(`removing ${picked.length} picked key${picked.length === 1 ? '' : 's'}`);
+    for (const { name, f } of picked) state.clip.removeKey(name, f);
+    state.picked = [];
+    toast(`Removed ${picked.length} key${picked.length === 1 ? '' : 's'}.`);
+    setFrame(state.frame);
+    renderTracks();
+    paintBoneTree();
+    markDirty();
+    return;
+  }
+
   const names = bone
     ? (state.clip.hasKey(bone.name, frame) ? [bone.name] : [])
     : state.clip.keyedNames().filter((name) => state.clip.hasKey(name, frame));
@@ -817,7 +991,16 @@ function setFrame(frame, fromPlayer = false) {
   const field = $('#frame-field');
   if (document.activeElement !== field) field.value = shown;
   movePlayhead(frame);
-  if (!player.playing) { refreshRotationFields(); updateReadout(); }
+  if (!player.playing) { refreshRotationFields(); updateReadout(); paintClipboard(); }
+}
+
+const isPicked = (name, frame) =>
+  state.picked.some((k) => k.name === name && k.f === frame);
+
+function togglePicked(name, frame) {
+  const at = state.picked.findIndex((k) => k.name === name && k.f === frame);
+  if (at >= 0) state.picked.splice(at, 1);
+  else state.picked.push({ name, f: frame });
 }
 
 function trackGeometry() {
@@ -871,23 +1054,33 @@ function renderTracks() {
     <div class="track${name === sel ? ' is-on' : ''}" data-name="${escapeHTML(name)}">
       <span class="track-name">${escapeHTML(prettyBone(name))}</span>
       ${state.clip.keysOf(name).map((k) =>
-        `<div class="keyd" style="left:${frameToX(k.f)}px" data-f="${k.f}"></div>`).join('')}
+        `<div class="keyd${isPicked(name, k.f) ? ' is-on' : ''}" style="left:${frameToX(k.f)}px" data-f="${k.f}"></div>`).join('')}
     </div>`).join('');
 
   container.querySelectorAll('.keyd').forEach((d) => {
     d.onclick = (e) => {
       e.stopPropagation();
-      view.selectByName(d.closest('.track').dataset.name);
-      setFrame(+d.dataset.f);
+      const name = d.closest('.track').dataset.name;
+      const frame = +d.dataset.f;
+      // Shift adds to what is picked out; a plain click starts again with
+      // just this one, which is how every list on a Mac behaves.
+      if (e.shiftKey) togglePicked(name, frame);
+      else state.picked = [{ name, f: frame }];
+      view.selectByName(name);
+      setFrame(frame);
+      renderTracks();
     };
   });
   container.querySelectorAll('.track').forEach((row) => {
     row.onclick = (e) => {
+      state.picked = [];
       view.selectByName(row.dataset.name);
-      setFrame(xToFrame(e.offsetX + (e.target === row ? 0 : 0)));
+      setFrame(xToFrame(e.offsetX));
+      renderTracks();
     };
   });
   movePlayhead(state.frame);
+  paintClipboard();
 }
 
 // Scrubbing: press on the ruler and drag.
@@ -901,6 +1094,7 @@ function renderTracks() {
   ruler.addEventListener('pointerdown', (e) => {
     scrubbing = true;
     player.pause();
+    if (state.picked.length) { state.picked = []; renderTracks(); }
     ruler.setPointerCapture(e.pointerId);
     scrub(e);
   });
@@ -977,8 +1171,8 @@ $('#btn-reset-joint').onclick = () => {
 $('#btn-mirror').onclick = () => {
   const bone = view.selected;
   if (!bone) return;
-  const other = mirrorName(bone.name);
-  const target = state.bones.find((b) => b.name === other);
+  const other = findMirror(bone.name, state.bones.map((b) => b.name));
+  const target = other && state.bones.find((b) => b.name === other);
   if (!target) { toast(`No opposite joint found for ${prettyBone(bone.name)}.`, true); return; }
   history.push(`mirroring onto ${prettyBone(other)}`);
   const q = bone.quaternion;
@@ -987,17 +1181,6 @@ $('#btn-mirror').onclick = () => {
   view.select(target);
   toast(`Mirrored onto ${prettyBone(other)} — check it before keying.`);
 };
-
-function mirrorName(name) {
-  const swaps = [
-    [/(^|[^a-z])Left/i, '$1Right'], [/(^|[^a-z])Right/i, '$1Left'],
-    [/_L$/, '_R'], [/_R$/, '_L'],
-    [/\.L$/, '.R'], [/\.R$/, '.L'],
-    [/_l$/, '_r'], [/_r$/, '_l'],
-  ];
-  for (const [from, to] of swaps) if (from.test(name)) return name.replace(from, to);
-  return name;
-}
 
 // ── saving and exporting ────────────────────────────────────────────
 
@@ -1215,6 +1398,18 @@ toggle($('#toggle-ground'), (on) => view.setGroundVisible(on));
 
 window.addEventListener('resize', () => renderTracks());
 
+/* Tell the rest of the page how tall the timeline actually is, so the
+ * workspace leaves exactly that much room however the controls wrap. */
+(() => {
+  const timeline = $('#timeline');
+  const measure = () => {
+    document.documentElement.style.setProperty('--timeline-h', `${timeline.offsetHeight}px`);
+    renderTracks();
+  };
+  new ResizeObserver(measure).observe(timeline);
+  measure();
+})();
+
 // ── keyboard ────────────────────────────────────────────────────────
 
 window.addEventListener('keydown', (e) => {
@@ -1226,6 +1421,16 @@ window.addEventListener('keydown', (e) => {
       if (!(e.metaKey || e.ctrlKey)) break;
       e.preventDefault();
       e.shiftKey ? redo() : undo();
+      break;
+    case 'c': case 'C':
+      if (!(e.metaKey || e.ctrlKey)) break;
+      e.preventDefault();
+      copyKeys();
+      break;
+    case 'v': case 'V':
+      if (!(e.metaKey || e.ctrlKey)) break;
+      e.preventDefault();
+      pasteKeys({ flipped: e.shiftKey });
       break;
     case 'k': case 'K': keyPose(); break;
     case 'r': case 'R': document.querySelector('[data-gizmo="rotate"]').click(); break;
@@ -1250,9 +1455,20 @@ window.addEventListener('beforeunload', (e) => {
  * Every one of these is the same thing a click would do, so there is one
  * implementation of each action and the menu is only another way of reaching
  * it. Anything the menu cannot do, the page cannot do either. */
+/* Typing in a box is typing in a box: Copy there should copy the text, not
+ * the character's pose. Paste is left alone in a field because a browser will
+ * not let a page paste on its own anyway. */
+const typing = () => {
+  const el = document.activeElement;
+  return !!el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
+};
+
 const COMMANDS = {
   undo,
   redo,
+  copy: () => { if (typing()) document.execCommand('copy'); else copyKeys(); },
+  paste: () => { if (!typing()) pasteKeys(); },
+  pasteFlipped: () => { if (!typing()) pasteKeys({ flipped: true }); },
   save: () => $('#btn-save').click(),
   export: () => { $('#export-pop').hidden = false; $('#btn-export-go').focus(); },
   exportNow: () => $('#btn-export-go').click(),
@@ -1285,7 +1501,9 @@ function command(name) {
 
 window.gerak = {
   state, view, player, api, command, openPath, native: NATIVE,
-  history, undo, redo,
+  history, undo, redo, copyKeys, pasteKeys,
+  mirrorOf: (name, names) => findMirror(name, names),
+  get clipboard() { return clipboard; },
   openModel, keyPose, setFrame, renderTracks, loadLibrary,
   renderLimbs, setChainMode, togglePin, applyPins,
   placeSkeleton, showRigPanel, setFacing,
@@ -1311,6 +1529,8 @@ async function reopenLast() {
 }
 
 paintHistory();
+recallClipboard();
+paintClipboard();
 loadLibrary().then(reopenLast);
 loadClips();
 renderRuler();

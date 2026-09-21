@@ -306,6 +306,62 @@ export function detectLimbs(bones) {
   return chains;
 }
 
+/* ── the other side of the body ──────────────────────────────────────
+ *
+ * Harder than it looks, for two reasons that only show up on real rigs.
+ *
+ * Meshy writes the side into the middle of a run-together name and hangs a
+ * node number on the end — "mixamorigLeftArm_29" — and that number is
+ * different for the joint on the other side, which is "mixamorigRightArm_14".
+ * So swapping the word is not enough: the name that comes out does not exist,
+ * and a straight lookup finds nothing.
+ *
+ * And a swap has to happen in one pass. Replacing Left with Right and then
+ * Right with Left puts every name back exactly where it started.
+ */
+
+const INDEX_SUFFIX = /[_.]\d+$/;
+
+/** The name this joint's opposite number would have, ignoring numbering. */
+export function mirrorName(name) {
+  // One pass over both words at once, keeping whatever capitalisation was
+  // there, so "LeftArm" gives "RightArm" and "hand_left" gives "hand_right".
+  const worded = name.replace(/left|right/gi, (found) => {
+    const swap = found.toLowerCase() === 'left' ? 'right' : 'left';
+    return found[0] === found[0].toUpperCase()
+      ? swap[0].toUpperCase() + swap.slice(1)
+      : swap;
+  });
+  if (worded !== name) return worded;
+
+  // The other convention: a single letter on the end or between separators.
+  const lettered = name.replace(/([_.\- ])([LlRr])(?=[_.\- ]|\d*$)/g, (whole, gap, side) => {
+    const swap = { L: 'R', R: 'L', l: 'r', r: 'l' }[side];
+    return gap + swap;
+  });
+  return lettered;
+}
+
+/**
+ * The joint on the other side of the body, by name, out of the names a model
+ * actually has.
+ *
+ * Tries the exact mirrored name first, then again ignoring a trailing node
+ * number — which is what makes it work on the Meshy rigs that most of these
+ * models are.
+ */
+export function findMirror(name, names) {
+  const wanted = mirrorName(name);
+  if (wanted === name) return null;
+  if (names.has ? names.has(wanted) : names.includes(wanted)) return wanted;
+
+  const bare = wanted.replace(INDEX_SUFFIX, '').toLowerCase();
+  for (const other of names) {
+    if (other !== name && other.replace(INDEX_SUFFIX, '').toLowerCase() === bare) return other;
+  }
+  return null;
+}
+
 /** Build a chain by hand: this joint, and the two above it. */
 export function chainFrom(bone, bones, length = 3) {
   const set = new Set(bones);

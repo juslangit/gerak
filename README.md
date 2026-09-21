@@ -65,6 +65,12 @@ ring appears.
 Frame 9 between keys at 6 and 12 is worked out on the spot, so you only pose
 the moments that matter.
 
+**Copy a pose and paste it somewhere else.** `⌘C` takes the pose at the
+playhead; `⌘V` puts it down at whatever frame you are on. `⇧⌘V` puts it down
+with left and right swapped, which is how the second half of a walk cycle gets
+made. Click a key on the timeline to pick just that one out, shift-click to
+pick more, and Copy takes only those.
+
 **Change your mind.** The two arrows beside the Key buttons are undo and
 redo, and `⌘Z` does the same. Hover one and it names what it will undo —
 "Undo turning LeftArm", "Undo keying frame 12".
@@ -119,6 +125,8 @@ what you get is exactly what the file did.
 | Key | What it does |
 |---|---|
 | `⌘Z` / `⇧⌘Z` | Undo / redo |
+| `⌘C` / `⌘V` | Copy the pose / paste it here |
+| `⇧⌘V` | Paste it with left and right swapped |
 | `K` | Key the pose at this frame |
 | `Space` | Play / pause |
 | `←` `→` | One frame back / forward (hold `Shift` for ten) |
@@ -300,3 +308,34 @@ are open. Undo should put the work back, not the furniture.
 
 Steps are only recorded when something really changes, so pressing Delete on a
 frame with no keys does not leave a step you then have to undo past.
+
+## Copying a pose
+
+Copy takes one of two things depending on what you have picked out on the
+timeline:
+
+- **nothing picked** — the whole pose at the playhead, *sampled*, so a frame
+  with no key on it still copies. That is what "copy the pose" has to mean,
+  or copying would only work on frames that already had keys.
+- **keys picked** — exactly those keys, keeping the gaps between them. Paste
+  anchors the earliest one at the playhead and everything else keeps its
+  distance.
+
+What gets stored is **joint names and rotations, not frame numbers**, so a
+pose copied off one character pastes onto another with the same rig — which
+covers most of the library, because those models came out of the same
+generator. Anything the target model does not have is skipped, and gerak says
+how many.
+
+**Paste ⇄** is the one worth knowing about. It swaps left for right and
+mirrors the rotation, so you pose the first half of a walk, paste it flipped
+twelve frames later, and the other leg is done. A joint with no opposite
+number — a spine, a head — is mirrored where it stands.
+
+Finding the opposite joint is harder than swapping the word, and this is the
+bit that used to be broken: a Meshy rig writes the side into the middle of a
+run-together name and hangs a node number on the end, and **the number is
+different on the two sides** — `mixamorigLeftArm_29` pairs with
+`mixamorigRightArm_14`. Swapping the word alone produces a name that exists
+nowhere, so the old Mirror button quietly found nothing on most of the models
+here. It now matches on the name with the numbering ignored.

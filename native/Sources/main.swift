@@ -499,9 +499,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate,
         edit.addItem(cmd: "redo", title: "Redo", key: "Z",
                      modifiers: [.command, .shift], target: self)
         edit.addItem(.separator())
+        // Copy and Paste mean the pose, because that is what gerak is for.
+        // The page hands them back to the browser when the cursor is in a
+        // text box, and runCommand hands them to macOS when a sheet is up.
+        edit.addItem(cmd: "copy", title: "Copy Pose", key: "c", target: self)
+        edit.addItem(cmd: "paste", title: "Paste Pose", key: "v", target: self)
+        edit.addItem(cmd: "pasteFlipped", title: "Paste Pose Flipped", key: "V",
+                     modifiers: [.command, .shift], target: self)
+        edit.addItem(.separator())
         edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         main.addItem(submenu: edit, title: "Edit")
 
@@ -558,8 +564,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate,
 
     @objc func runCommand(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
+
+        // While a sheet is up - naming a clip, say - Copy and Paste belong to
+        // the text field in it, not to the character's pose.
+        if window.attachedSheet != nil,
+           let standard = Self.standardEdit[name] {
+            NSApp.sendAction(standard, to: nil, from: sender)
+            return
+        }
+
         run("window.gerak && window.gerak.command(\(Self.js(name)))")
     }
+
+    private static let standardEdit: [String: Selector] = [
+        "copy": #selector(NSText.copy(_:)),
+        "paste": #selector(NSText.paste(_:)),
+        "undo": Selector(("undo:")),
+        "redo": Selector(("redo:")),
+    ]
 
     @objc private func about() {
         let alert = NSAlert()
