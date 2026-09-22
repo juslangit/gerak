@@ -126,6 +126,57 @@ load one as ordinary keys, so you can edit someone else's walk instead of posing
 one from a T-pose. It samples every frame rather than copying the curves, so
 what you get is exactly what the file did.
 
+## Reference pictures
+
+Animating from memory is how a walk comes out looking like somebody wading.
+The question is never *what does a walking person look like* — it is **where
+is the far leg on frame six**.
+
+Press **Reference** in the viewport tools, or **F**, and search.
+
+### Motion studies
+
+Eadweard Muybridge photographed people and animals frame by frame in the 1880s
+to settle what a galloping horse really does with its legs. Walking, running,
+jumping, climbing, boxing, dancing; horses, dogs, cats, elephants, buffalo. The
+plates are long out of copyright, Wikimedia Commons holds them, and a great
+many are already assembled into animated GIFs.
+
+A GIF is a sequence already, so nothing has to be guessed about where one
+frame ends. Those results are marked **sequence**, and when you pin one:
+
+- it is **pulled apart into frames** on the way in;
+- **Follow** steps it with your timeline, *proportionally* — a 12-frame
+  Muybridge walk against a 48-frame clip advances one reference frame every
+  four, so the two stay in step whatever length either is;
+- **Flip** plays the reference on its own at about twelve a second, which is
+  roughly what Muybridge shot at, for comparing timing rather than poses.
+
+They are anatomical studies, so the human ones are nude figures — that is the
+point of them, and it is what a search for "walking" returns. **Photographs**
+is the other tab when you want somebody with clothes on, or something
+Muybridge never shot.
+
+### The pinned picture
+
+One picture floats over the viewport. Drag its title bar to move it, its
+bottom-right corner to resize it, and the slider to fade it — so you pose the
+leg against the photograph rather than against your memory of it. It goes to
+full strength while the pointer is over it, so a faint reference can still be
+read when you reach for its controls.
+
+You can also **drop a picture of your own** on the drawer.
+
+### It stays with the clip
+
+A pinned reference is saved in the clip, with where it came from and its
+licence, and comes back when you reopen it. The picture itself is copied to
+`~/Documents/gerak/references/<clip>/` — a reference that lives at a URL is a
+reference that is gone when the link rots or the laptop is on a train.
+
+Nothing is fetched by the page: the server gets the picture and hands it over,
+so Commons never learns what you are animating.
+
 ## Keys on the keyboard
 
 | Key | What it does |
@@ -138,6 +189,7 @@ what you get is exactly what the file did.
 | `←` `→` | One frame back / forward (hold `Shift` for ten) |
 | `R` / `G` | Rotate / move the selected joint |
 | `S` / `M` | Show or hide the skeleton / the mesh |
+| `F` | Reference pictures |
 | `Delete` | Remove the key under the playhead |
 | `Esc` | Deselect |
 

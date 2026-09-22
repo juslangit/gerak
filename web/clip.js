@@ -19,6 +19,7 @@ const _qb = new THREE.Quaternion();
 
 export class Clip {
   constructor(opts = {}) {
+    this.reference = opts.reference || null;
     this.name = opts.name || 'untitled';
     this.model = opts.model || '';
     this.fps = opts.fps || 24;
@@ -211,6 +212,9 @@ export class Clip {
       fps: this.fps,
       frames: this.frames,
       interp: this.interp,
+      // What was on screen beside it while it was made. Reopening a walk
+      // cycle next week should put the walk back on screen with it.
+      reference: this.reference || null,
       tracks,
     };
   }
@@ -225,6 +229,7 @@ export class Clip {
    */
   static fromJSON(doc) {
     const clip = new Clip(doc);
+    clip.reference = doc.reference || null;
     for (const [name, track] of Object.entries(doc.tracks || {})) {
       clip.tracks.set(name, track
         .map((key) => ({ f: key.f, q: key.q.slice(), p: key.p.slice() }))

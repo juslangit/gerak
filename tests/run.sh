@@ -56,6 +56,9 @@ run "the app, driven like a person" \
 run "the rigging flow, end to end" \
   node tests/run-browser.mjs "$BASE/?t=$TOKEN" tests/rigflow.smoke.mjs
 
+run "reference pictures" \
+  node tests/run-browser.mjs "$BASE/?t=$TOKEN" tests/reference.smoke.mjs
+
 # The rigging suite writes rigged copies into the exports folder. They are
 # test output, not your work, so they do not get to sit in Documents.
 find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'test-*-rigged.glb' -delete 2>/dev/null

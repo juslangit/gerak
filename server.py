@@ -45,12 +45,23 @@ WEB = os.path.join(HERE, "web")
 BLENDER_DIR = os.path.join(HERE, "blender")
 HOME = os.path.expanduser("~")
 
+# The reference search lives in common/, because boneka wants the same thing
+# for checking a model against the animal it is meant to be, and one
+# description of how to talk to Wikimedia is enough.
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "common"))
+try:
+    import refs as references                          # noqa: E402
+except Exception as _err:                              # pragma: no cover
+    references = None
+    print("[gerak] reference search unavailable: %s" % _err, file=sys.stderr)
+
 # Your clips and your exports are your work, not part of the program, so they
 # live where you can find them in Finder rather than inside a project folder -
 # and inside an app bundle they could not be written to at all.
 DATA = os.environ.get("GERAK_DATA") or os.path.join(HOME, "Documents", "gerak")
 CLIPS = os.path.join(DATA, "clips")
 EXPORTS = os.path.join(DATA, "exports")
+REFS = os.path.join(DATA, "references")
 CACHE = os.path.join(DATA, ".library.json")
 JOBS = os.path.join(DATA, ".jobs")
 
@@ -489,6 +500,47 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "no such clip"}, 404)
             return self.send_file(full, "application/json")
 
+        # ── reference pictures ────────────────────────────────────
+        #
+        # Searching, and then serving the picture. Both go through the server:
+        # the page never talks to Wikimedia itself, so the origin rule stays
+        # true for everything on screen and Commons never learns what he is
+        # animating.
+
+        if path == "/api/refs":
+            if references is None:
+                return self.send_json({"error": "reference search is not available"}, 503)
+            term = (query.get("q") or [""])[0]
+            kind = (query.get("kind") or ["all"])[0]
+            try:
+                found = references.look(term, kind, 12)
+            except Exception as err:
+                log("reference search failed:", err)
+                return self.send_json({"error": str(err)}, 502)
+            return self.send_json({"items": found, "query": term, "kind": kind})
+
+        if path == "/api/ref-image":
+            if references is None:
+                return self.send_json({"error": "no"}, 503)
+            url = unquote((query.get("url") or [""])[0])
+            try:
+                body, ctype = references.fetch(url)
+            except ValueError:
+                return self.send_json({"error": "not a Wikimedia image"}, 403)
+            except Exception as err:
+                return self.send_json({"error": str(err)}, 502)
+            return self.send_bytes(body, ctype)
+
+        if path == "/api/ref-file":
+            # Anything already pinned, served off the disk. Confined to the
+            # references folder: this route exists to show pictures, not to
+            # read the machine.
+            target = os.path.realpath(unquote((query.get("path") or [""])[0]))
+            if not target.startswith(os.path.realpath(REFS) + os.sep) \
+                    or not os.path.isfile(target):
+                return self.send_json({"error": "no"}, 403)
+            return self.send_file(target)
+
         return self.send_json({"error": "unknown route"}, 404)
 
     def do_POST(self):
@@ -596,6 +648,57 @@ class Handler(BaseHTTPRequestHandler):
                 os.remove(full)
             return self.send_json({"ok": True})
 
+        if path == "/api/ref-pin":
+            # Keep a reference beside the work rather than at a URL.
+            #
+            # A reference that lives on the internet is a reference that is
+            # gone when the link rots or the laptop is on a train, and the
+            # whole point of pinning one is that it is there next time the
+            # clip is opened.
+            if references is None:
+                return self.send_json({"error": "reference search is not available"}, 503)
+            url = body.get("url") or ""
+            slug = SAFE_NAME.sub("-", (body.get("clip") or "loose").lower()).strip("-")
+            folder = os.path.join(REFS, slug or "loose")
+            try:
+                saved = references.keep_local(url, folder, body.get("name"))
+            except ValueError:
+                return self.send_json({"error": "not a Wikimedia image"}, 403)
+            except Exception as err:
+                log("could not pin a reference:", err)
+                return self.send_json({"error": str(err)}, 502)
+
+            # A GIF is a sequence already, so pull it apart now: stepping it
+            # against the timeline and playing it as a flipbook both want the
+            # frames as separate pictures, and doing it once on pin beats
+            # doing it every time the panel opens.
+            frames = references.split_frames(saved, os.path.join(folder, "frames"))
+            log("pinned %s (%d frames)" % (os.path.basename(saved), len(frames)))
+            return self.send_json({
+                "ok": True,
+                "path": saved,
+                "shown": saved.replace(HOME, "~"),
+                "frames": frames,
+                "count": len(frames),
+            })
+
+        if path == "/api/ref-drop":
+            # One of his own pictures, dropped on the panel.
+            source = os.path.expanduser(body.get("path") or "")
+            if not source or not os.path.isfile(source) or not allowed(source):
+                return self.send_json({"error": "that file is not one I can read"}, 403)
+            slug = SAFE_NAME.sub("-", (body.get("clip") or "loose").lower()).strip("-")
+            folder = os.path.join(REFS, slug or "loose")
+            os.makedirs(folder, exist_ok=True)
+            saved = os.path.join(folder, os.path.basename(source))
+            shutil.copy2(source, saved)
+            frames = references.split_frames(saved, os.path.join(folder, "frames")) \
+                if references else []
+            return self.send_json({
+                "ok": True, "path": saved, "shown": saved.replace(HOME, "~"),
+                "frames": frames, "count": len(frames),
+            })
+
         if path == "/api/reveal":
             # Open a finished export in Finder, so the file is where you can
             # see it rather than only named in a message.
@@ -669,7 +772,7 @@ def watch_parent():
 
 
 def main():
-    for folder in (DATA, CLIPS, EXPORTS, JOBS):
+    for folder in (DATA, CLIPS, EXPORTS, JOBS, REFS):
         os.makedirs(folder, exist_ok=True)
     migrate_old_data()
 

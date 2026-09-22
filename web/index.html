@@ -94,6 +94,10 @@
         <button class="seg-btn is-on" data-gizmo="rotate" title="Rotate joint (R)">Rotate</button>
         <button class="seg-btn" data-gizmo="translate" title="Move joint (G)">Move</button>
       </div>
+      <div class="seg" role="group" aria-label="Reference">
+        <button class="seg-btn" id="btn-reference"
+                title="Reference pictures (F)">Reference</button>
+      </div>
       <div class="seg" role="group" aria-label="Show">
         <button class="seg-btn is-on" id="toggle-skeleton" title="Show the skeleton (S)">Joints</button>
         <button class="seg-btn is-on" id="toggle-mesh" title="Show the model (M)">Mesh</button>
@@ -102,6 +106,58 @@
     </div>
 
     <div class="viewport-readout" id="readout"></div>
+
+    <!-- ── the reference drawer ──────────────────────────────────── -->
+    <aside class="ref-drawer" id="ref-drawer" hidden>
+      <header class="ref-head">
+        <h2>Reference</h2>
+        <button class="icon-btn" id="ref-close" title="Close">×</button>
+      </header>
+
+      <div class="ref-search">
+        <input type="search" id="ref-q" placeholder="walking, running, horse gallop…">
+        <button class="btn btn-small" id="ref-go">Search</button>
+      </div>
+
+      <div class="seg ref-kinds" id="ref-kinds">
+        <button class="seg-btn is-on" data-kind="motion">Motion studies</button>
+        <button class="seg-btn" data-kind="photo">Photographs</button>
+      </div>
+
+      <p class="ref-lead">
+        Muybridge photographed people and animals frame by frame in the 1880s
+        to settle what a galloping horse really does with its legs. The plates
+        are out of copyright, and the ones marked <b>sequence</b> can be
+        stepped alongside your timeline. Or drop a picture of your own in here.
+      </p>
+
+      <div class="ref-results" id="ref-results"></div>
+    </aside>
+
+    <!-- ── the pinned picture, over the viewport ─────────────────── -->
+    <div class="ref-pin" id="ref-pin" hidden>
+      <div class="ref-pin-bar" id="ref-pin-bar">
+        <span class="ref-pin-title" id="ref-pin-title"></span>
+        <button class="icon-btn" id="ref-unpin" title="Take it down">×</button>
+      </div>
+      <img id="ref-pin-img" alt="reference">
+      <div class="ref-pin-foot">
+        <label class="ref-fade">
+          <input type="range" id="ref-opacity" min="0.1" max="1" step="0.05" value="0.6">
+          <span id="ref-opacity-n">60%</span>
+        </label>
+        <div class="ref-seq" id="ref-seq" hidden>
+          <input type="range" id="ref-step" min="0" max="0" step="1" value="0">
+          <span id="ref-frame-n">1/1</span>
+          <label class="ref-check" title="Step it with the timeline">
+            <input type="checkbox" id="ref-follow" checked><span>Follow</span>
+          </label>
+          <button class="btn btn-small" id="ref-flip" title="Play the reference by itself">Flip</button>
+        </div>
+        <span class="ref-pin-credit" id="ref-pin-credit"></span>
+      </div>
+      <span class="ref-pin-grip" id="ref-pin-grip" title="Drag to resize"></span>
+    </div>
   </section>
 
   <!-- ── right: the skeleton ──────────────────────────────────────── -->

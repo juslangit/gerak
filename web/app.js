@@ -18,6 +18,7 @@ import { detectLimbs, chainFrom, findMirror } from '/web/ik.js';
 import { TEMPLATES, TEMPLATE_ORDER, fitTemplate, guessFacing, headsAndTails }
   from '/web/templates.js';
 import { History } from '/web/history.js';
+import { Reference } from '/web/reference.js';
 
 const $ = (sel) => document.querySelector(sel);
 const TOKEN = window.GERAK_TOKEN;
@@ -1041,8 +1042,23 @@ function markDirty() {
 
 // ── the frame, and the timeline ─────────────────────────────────────
 
+/* Reference pictures, floating over the viewport.
+ *
+ * It is handed the four things it needs and knows nothing else about gerak,
+ * so it could be lifted into boneka for modelling reference without being
+ * rewritten. */
+const reference = new Reference({
+  api,
+  say: toast,
+  clipName: () => state.clip.name || 'loose',
+  onChange: () => { state.clip.reference = reference.toJSON(); state.clip.dirty = true; },
+});
+
 function setFrame(frame, fromPlayer = false) {
   state.frame = frame;
+  // A 12-frame Muybridge walk against a 48-frame clip advances one reference
+  // frame every four, so the two stay in step whatever length either is.
+  reference.atFrame(frame, state.clip.frames);
   if (state.bones.length) {
     state.clip.applyTo(state.bones, view.restPose, frame);
     refreshChains();
@@ -1429,6 +1445,7 @@ async function openClip(meta) {
 
   history.push(`opening the clip "${meta.name}"`);
   state.clip = Clip.fromJSON(doc);
+  reference.fromJSON(state.clip.reference);
   $('#fps-field').value = state.clip.fps;
   $('#length-field').value = state.clip.frames;
   $('#btn-save').textContent = 'Save clip';
@@ -1504,6 +1521,7 @@ window.addEventListener('keydown', (e) => {
       pasteKeys({ flipped: e.shiftKey });
       break;
     case 'k': case 'K': keyPose(); break;
+    case 'f': case 'F': $('#btn-reference').click(); break;
     case 'r': case 'R': document.querySelector('[data-gizmo="rotate"]').click(); break;
     case 'g': case 'G': document.querySelector('[data-gizmo="translate"]').click(); break;
     case 's': case 'S': $('#toggle-skeleton').click(); break;
@@ -1620,7 +1638,7 @@ window.gerak = {
   history, undo, redo, copyKeys, pasteKeys, insideSanggar: INSIDE_BENGKEL,
   mirrorOf: (name, names) => findMirror(name, names),
   get clipboard() { return clipboard; },
-  openModel, keyPose, setFrame, renderTracks, loadLibrary,
+  openModel, keyPose, setFrame, renderTracks, loadLibrary, reference,
   renderLimbs, setChainMode, togglePin, applyPins,
   placeSkeleton, showRigPanel, setFacing,
 };

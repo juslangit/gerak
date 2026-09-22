@@ -352,10 +352,16 @@ kbd {
   position: absolute;
   top: 16px;
   left: 16px;
+  right: 16px;
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
 }
+
+/* While the reference drawer is open it needs an edge to wrap against, or the
+ * drawer simply covers the last two buttons and they look like they have gone
+ * away. The row already wraps; it just had no right-hand side. */
+.stage.has-ref .viewport-tools { right: calc(330px + 16px); }
 
 .seg {
   display: flex;
@@ -974,4 +980,194 @@ kbd {
   opacity: 0.62;
   margin-left: 3px;
   font-variant-numeric: tabular-nums;
+}
+
+
+/* ── reference pictures ───────────────────────────────────────────── */
+
+/* The drawer slides over the stage rather than taking a fourth column. The
+ * workspace is already three columns wide on a laptop screen, and a reference
+ * you have to make room for is a reference you stop opening. */
+
+.ref-drawer {
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: 330px;
+  z-index: 8;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--line);
+  box-shadow: -14px 0 34px rgba(0, 0, 0, .34);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 16px;
+  overflow-y: auto;
+}
+.ref-drawer[hidden] { display: none; }
+.ref-drawer.is-dropping { outline: 2px dashed var(--key); outline-offset: -8px; }
+
+.ref-head { display: flex; align-items: center; justify-content: space-between; }
+.ref-head h2 {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.ref-search { display: flex; gap: 7px; }
+.ref-search input { flex: 1; min-width: 0; }
+
+.ref-kinds { width: 100%; }
+.ref-kinds .seg-btn { flex: 1; font-size: 0.8rem; }
+
+.ref-lead { margin: 0; font-size: 0.78rem; line-height: 1.5; color: var(--ink-faint); }
+.ref-lead b { color: var(--ink-dim); font-weight: 600; }
+
+.ref-note { margin: 10px 2px; font-size: 0.85rem; color: var(--ink-faint); line-height: 1.5; }
+
+.ref-results { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+
+.ref-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 0 7px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.ref-card:hover { border-color: var(--key); }
+
+.ref-shot {
+  position: relative;
+  display: block;
+  aspect-ratio: 3 / 4;
+  background: var(--bg-sunken);
+}
+.ref-shot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+.ref-badge {
+  position: absolute;
+  left: 5px; top: 5px;
+  font-size: 0.62rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 20px;
+  background: rgba(18, 20, 25, .84);
+  color: var(--key);
+  border: 1px solid currentColor;
+}
+
+.ref-name {
+  padding: 0 8px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.ref-licence { padding: 0 8px; font-size: 0.68rem; color: var(--ink-faint); }
+
+/* ── the pinned picture ───────────────────────────────────────────── */
+
+.ref-pin {
+  position: absolute;
+  /* On the left by default: the drawer opens on the right, and a reference
+     that appears underneath the panel you picked it from looks like nothing
+     happened at all. */
+  top: 68px; left: 20px;
+  width: 300px;
+  max-height: calc(100% - 92px);
+  z-index: 7;
+  background: rgba(14, 16, 20, .55);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  opacity: .6;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ref-pin[hidden] { display: none; }
+/* Full strength while you are working on it, so a faint reference can still
+ * be read when you reach for its controls. */
+.ref-pin:hover { opacity: 1 !important; }
+
+.ref-pin-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px 9px;
+  background: rgba(20, 22, 27, .9);
+  cursor: grab;
+  touch-action: none;
+}
+.ref-pin-bar:active { cursor: grabbing; }
+.ref-pin-title {
+  flex: 1;
+  font-size: 0.74rem;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ref-pin img {
+  width: 100%;
+  display: block;
+  background: #000;
+  /* The box is clamped to the stage, so the picture has to give way rather
+     than push the controls down onto the timeline. */
+  min-height: 0;
+  object-fit: contain;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.ref-pin-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 9px 8px;
+  background: rgba(20, 22, 27, .9);
+}
+.ref-fade { display: flex; align-items: center; gap: 7px; }
+.ref-fade input { flex: 1; accent-color: var(--key); }
+.ref-fade span, .ref-seq span {
+  font: 500 0.7rem ui-monospace, "SF Mono", monospace;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+.ref-seq { display: flex; align-items: center; gap: 7px; }
+.ref-seq input[type=range] { flex: 1; min-width: 0; accent-color: var(--key); }
+.ref-check { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.ref-check input { width: 13px; height: 13px; accent-color: var(--key); }
+.ref-check span { font-size: 0.7rem; color: var(--ink-faint); }
+#ref-flip.is-on { background: var(--key); color: #14161b; border-color: var(--key); }
+
+.ref-pin-credit {
+  font-size: 0.66rem;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ref-pin-grip {
+  position: absolute;
+  right: 0; bottom: 0;
+  width: 15px; height: 15px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, var(--ink-faint) 50%);
+  opacity: .6;
+  touch-action: none;
 }
