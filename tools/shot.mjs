@@ -40,11 +40,49 @@ const chrome = spawn(CHROME, [
   'about:blank',
 ], { stdio: 'ignore' });
 
+/* Chrome must die whatever happens to this script. 'exit' alone is not
+ * enough: it does not run on SIGINT or SIGTERM, so a Ctrl-C or a kill used to
+ * leave a headless Chrome and its four helper processes running. Three of
+ * those were found still going twenty-five hours later, between them holding
+ * five and a half of this machine's eight cores. */
+let cleanedUp = false;
 const cleanup = () => {
+  if (cleanedUp) return;
+  cleanedUp = true;
   try { chrome.kill('SIGKILL'); } catch {}
   try { rmSync(profile, { recursive: true, force: true }); } catch {}
 };
 process.on('exit', cleanup);
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => { cleanup(); process.exit(130); });
+}
+process.on('uncaughtException', (err) => {
+  console.error('shot failed:', err.message);
+  cleanup();
+  process.exit(1);
+});
+
+/* Nothing in here may wait forever. Every await below has a deadline, and the
+ * whole run has one too, because the failure that actually happened was not a
+ * crash - it was a promise that simply never settled, with no error, no
+ * output, and no end. */
+const DEADLINE_MS = Number(process.env.GERAK_SHOT_DEADLINE || 6 * 60 * 1000);
+const overall = setTimeout(() => {
+  console.error(`shot failed: gave up after ${Math.round(DEADLINE_MS / 1000)}s`);
+  cleanup();
+  process.exit(1);
+}, DEADLINE_MS);
+overall.unref();
+
+function withTimeout(promise, ms, what) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, no) => {
+      timer = setTimeout(() => no(new Error(`${what} did not answer in ${ms}ms`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -67,11 +105,12 @@ function talk(ws) {
       msg.error ? no(new Error(msg.error.message)) : ok(msg.result);
     }
   });
-  return (method, params = {}) => new Promise((ok, no) => {
-    const n = ++id;
-    waiting.set(n, { ok, no });
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
+  return (method, params = {}, ms = 60000) => withTimeout(
+    new Promise((ok, no) => {
+      const n = ++id;
+      waiting.set(n, { ok, no });
+      ws.send(JSON.stringify({ id: n, method, params }));
+    }), ms, method);
 }
 
 /* Each shot is a name and a piece of code run inside the page. */
@@ -167,7 +206,11 @@ try {
     });
   });
   await send('Page.navigate', { url: `http://127.0.0.1:${port}/?t=${encodeURIComponent(token)}` });
-  await loaded;
+  // A page that holds a connection open can take its time firing load, or
+  // never fire it at all. Wait, but carry on rather than stop for ever - by
+  // this point the app is usually up and the shots below will say if it is not.
+  await withTimeout(loaded, 30000, 'the page load event')
+    .catch((err) => console.error(`  ${err.message} - carrying on anyway`));
   await sleep(1200);
 
   // The dialogs the app opens on its own would sit in front of a screenshot.
@@ -176,11 +219,20 @@ try {
   });
 
   for (const shot of SHOTS_TO_TAKE) {
-    const res = await send('Runtime.evaluate', {
-      expression: `(async () => {\n${shot.setup}\n return true; })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
+    // awaitPromise means this call does not return until the page's own
+    // promise settles, and the setup code awaits things like a full library
+    // rescan. Give it a generous window and then move to the next shot.
+    let res;
+    try {
+      res = await send('Runtime.evaluate', {
+        expression: `(async () => {\n${shot.setup}\n return true; })()`,
+        awaitPromise: true,
+        returnByValue: true,
+      }, 120000);
+    } catch (err) {
+      console.error(`  ${shot.name}: ${err.message}`);
+      continue;
+    }
     if (res.exceptionDetails) {
       console.error(`  ${shot.name}: ${res.exceptionDetails.exception?.description?.split('\n')[0]}`);
       continue;
@@ -193,7 +245,11 @@ try {
     console.log(`  saved ${shot.name}.png`);
   }
   console.log(`\nscreenshots are in ${SHOTS}`);
+  clearTimeout(overall);
+  cleanup();
+  process.exit(0);
 } catch (err) {
   console.error('shot failed:', err.message);
+  cleanup();
   process.exit(1);
 }
