@@ -938,3 +938,40 @@ kbd {
   .tp { width: 38px; height: 38px; }
   .frame-readout input, .fps input { width: 52px; }
 }
+
+/* ── where a model came from ──────────────────────────────────────── */
+
+.source-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 0 14px 10px;
+  flex: none;
+  max-height: 88px;
+  overflow-y: auto;
+}
+
+.chip-filter {
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 550;
+  color: var(--ink-faint);
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: 20px;
+  padding: 4px 9px 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chip-filter:hover { color: var(--ink-dim); border-color: var(--line); }
+.chip-filter.is-on {
+  color: #1a1305;
+  background: var(--key);
+  border-color: var(--key);
+  font-weight: 650;
+}
+.chip-filter span {
+  opacity: 0.62;
+  margin-left: 3px;
+  font-variant-numeric: tabular-nums;
+}

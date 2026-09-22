@@ -31,6 +31,13 @@ const TOKEN = window.GERAK_TOKEN;
 const NATIVE = new URLSearchParams(location.search).get('native') === '1';
 if (NATIVE) document.documentElement.classList.add('is-native');
 
+/* Running inside sanggar, with boneka next door.
+ *
+ * gerak does not know where boneka is or how to reach it, and does not need
+ * to: it asks sanggar to carry a file across. Outside sanggar `window.sanggar`
+ * is simply not there and none of this happens. */
+const INSIDE_SANGGAR = !!window.sanggar;
+
 // ── talking to the server ───────────────────────────────────────────
 
 async function api(path, body) {
@@ -57,6 +64,7 @@ const state = {
   chains: [],           // the limbs, each either FK or IK
   rig: { template: 'biped', facing: 0, flip: false },
   picked: [],           // keys picked out on the timeline: { name, f }
+  source: null,         // the library filter: where a model came from
 };
 
 const view = new Viewport($('#viewport'));
@@ -355,13 +363,67 @@ async function loadLibrary(refresh = false) {
   }
 }
 
+/**
+ * Where a model came from, in one word.
+ *
+ * The list is 3,400 rows long and the folder path is the only thing that says
+ * where a model came from — but reading `~/Desktop/project/ai/boneka/sessions`
+ * off every row is not the same as being able to ask for everything boneka
+ * made. So each row gets a short source, and the sources become a row of
+ * chips above the list.
+ */
+function sourceOf(item) {
+  const path = item.path;
+  if (/\/boneka\/sessions\//.test(path)) return 'boneka';
+  if (/\/Documents\/gerak\/exports\//.test(path)) return 'gerak exports';
+  if (/\/Documents\/sanggar\//.test(path)) return 'sanggar';
+  const inProject = path.match(/\/Desktop\/project\/[^/]+\/([^/]+)\//);
+  if (inProject) return inProject[1];
+  if (/\/Downloads\//.test(path)) return 'Downloads';
+  return 'elsewhere';
+}
+
+function renderSources() {
+  const row = $('#source-row');
+  const counts = new Map();
+  for (const item of state.library) {
+    if ($('#only-rigged').checked && !item.rigged) continue;
+    const source = sourceOf(item);
+    counts.set(source, (counts.get(source) || 0) + 1);
+  }
+
+  // Most first, but boneka pinned to the front — it is the tool next door,
+  // and what it made is the most likely thing to want.
+  const sources = [...counts.entries()].sort((a, b) => {
+    if (a[0] === 'boneka') return -1;
+    if (b[0] === 'boneka') return 1;
+    return b[1] - a[1];
+  });
+
+  row.innerHTML = `<button class="chip-filter${state.source ? '' : ' is-on'}" data-source="">`
+    + `All <span>${[...counts.values()].reduce((a, b) => a + b, 0)}</span></button>`
+    + sources.map(([source, n]) =>
+      `<button class="chip-filter${state.source === source ? ' is-on' : ''}" `
+      + `data-source="${escapeHTML(source)}">${escapeHTML(source)} <span>${n}</span></button>`).join('');
+
+  row.querySelectorAll('.chip-filter').forEach((chip) => {
+    chip.onclick = () => {
+      state.source = chip.dataset.source || null;
+      renderLibrary();
+    };
+  });
+}
+
 function renderLibrary() {
   const q = $('#library-search').value.trim().toLowerCase();
   const onlyRigged = $('#only-rigged').checked;
   const list = $('#library-list');
 
+  renderSources();
+
   let items = state.library;
   if (onlyRigged) items = items.filter((i) => i.rigged);
+  if (state.source) items = items.filter((i) => sourceOf(i) === state.source);
   if (q) items = items.filter((i) =>
     i.name.toLowerCase().includes(q) || i.folder.toLowerCase().includes(q));
 
@@ -1195,6 +1257,15 @@ $('#btn-save').onclick = async () => {
     $('#btn-save').textContent = 'Save clip';
     toast(`Saved "${name}".`);
     loadClips();
+    // Saving a clip means this model is something you are working on, so it
+    // goes on sanggar's list. Merely opening a model does not.
+    if (INSIDE_SANGGAR && state.model) {
+      window.sanggar.note({
+        path: state.model.path,
+        name: state.model.name.replace(/\.\w+$/, ''),
+        what: `saved the clip "${name}"`,
+      });
+    }
   } catch (err) {
     toast(`Could not save: ${err.message}`, true);
   }
@@ -1448,6 +1519,51 @@ window.addEventListener('beforeunload', (e) => {
   if (state.clip.dirty) { e.preventDefault(); e.returnValue = ''; }
 });
 
+/* ── next door ───────────────────────────────────────────────────────
+ *
+ * A model arriving from boneka opens like any other file; one going back is
+ * exported first, because boneka reads files and not viewports.
+ */
+
+if (INSIDE_SANGGAR) {
+  window.sanggar.onReceive(async (payload) => {
+    if (!payload || !payload.path) return;
+    const arrived = await openPath(payload.path);
+    if (arrived) {
+      toast(payload.note
+        ? `"${payload.note}" came over from boneka — click a joint and start posing.`
+        : 'Came over from boneka — click a joint and start posing.');
+    }
+  });
+
+  const back = $('#btn-to-boneka');
+  back.hidden = false;
+  back.onclick = async () => {
+    if (!state.model) { toast('Open a model first.'); return; }
+    back.disabled = true;
+    const was = back.textContent;
+    back.textContent = 'Writing a .glb…';
+    try {
+      const base = `${state.model.name.replace(/\.\w+$/, '')}-${state.clip.name}`
+        .replace(/^(.+)-\1$/, '$1');
+      const saved = await api('/api/export/save', {
+        name: base, ext: 'glb', data: toBase64(await buildGLB()),
+      });
+      await window.sanggar.handOver('boneka', saved.path, state.model.name);
+      toast('Sent to boneka.');
+    } catch (err) {
+      toast(`Could not send it: ${err.message}`, true);
+    } finally {
+      back.textContent = was;
+      back.disabled = false;
+    }
+  };
+}
+
+/* What sanggar's menu bar drives. Every tool it hosts answers to this one
+ * name, so sanggar needs to know nothing about any of them. */
+window.__toolCommand = (name) => command(name);
+
 /* One handle on the whole app, for the tests that drive it in a real browser
  * and for poking at it from the browser console when something looks wrong. */
 /* What the macOS menu bar drives.
@@ -1501,7 +1617,7 @@ function command(name) {
 
 window.gerak = {
   state, view, player, api, command, openPath, native: NATIVE,
-  history, undo, redo, copyKeys, pasteKeys,
+  history, undo, redo, copyKeys, pasteKeys, insideSanggar: INSIDE_SANGGAR,
   mirrorOf: (name, names) => findMirror(name, names),
   get clipboard() { return clipboard; },
   openModel, keyPose, setFrame, renderTracks, loadLibrary,

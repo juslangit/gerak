@@ -14,7 +14,13 @@ It runs entirely on this machine: the Python that comes with macOS, the Blender
 already installed, and a copy of three.js kept in the folder. Nothing to
 install, no account, no internet.
 
-## Two ways to run it
+## Three ways to run it
+
+**Inside sanggar**, which is the front door to all of it — `sanggar.app` holds
+gerak and boneka in one window, and a model made in boneka opens here with one
+click. Everything below still works exactly as it did.
+
+## And on its own
 
 **As a Mac app.** `gerak.app` in `/Applications` — double-click it, or find it
 in Spotlight. Its own window, its own menu bar, a Dock icon. It starts and
@@ -221,6 +227,10 @@ before it is checked, so `..` and symlinks cannot walk out.
 
 ## Where this sits next to your other tools
 
+- **sanggar** is the window all of this now lives in. Inside it, gerak's
+  library pins boneka's models first, a model handed over from boneka opens
+  straight away, and the export panel can send an animated one back. Outside
+  it, none of that exists and gerak is unchanged.
 - **boneka** *makes* models and rigs them, and animates by prompt.
   gerak *animates by hand*, and opens anything on the Mac, not only boneka's
   output. boneka's decision D-005 deliberately left IK out; gerak is where it
