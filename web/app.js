@@ -31,12 +31,12 @@ const TOKEN = window.GERAK_TOKEN;
 const NATIVE = new URLSearchParams(location.search).get('native') === '1';
 if (NATIVE) document.documentElement.classList.add('is-native');
 
-/* Running inside sanggar, with boneka next door.
+/* Running inside bengkel, with boneka next door.
  *
  * gerak does not know where boneka is or how to reach it, and does not need
- * to: it asks sanggar to carry a file across. Outside sanggar `window.sanggar`
+ * to: it asks bengkel to carry a file across. Outside bengkel `window.bengkel`
  * is simply not there and none of this happens. */
-const INSIDE_SANGGAR = !!window.sanggar;
+const INSIDE_BENGKEL = !!window.bengkel;
 
 // ── talking to the server ───────────────────────────────────────────
 
@@ -376,7 +376,7 @@ function sourceOf(item) {
   const path = item.path;
   if (/\/boneka\/sessions\//.test(path)) return 'boneka';
   if (/\/Documents\/gerak\/exports\//.test(path)) return 'gerak exports';
-  if (/\/Documents\/sanggar\//.test(path)) return 'sanggar';
+  if (/\/Documents\/bengkel\//.test(path)) return 'bengkel';
   const inProject = path.match(/\/Desktop\/project\/[^/]+\/([^/]+)\//);
   if (inProject) return inProject[1];
   if (/\/Downloads\//.test(path)) return 'Downloads';
@@ -1258,9 +1258,9 @@ $('#btn-save').onclick = async () => {
     toast(`Saved "${name}".`);
     loadClips();
     // Saving a clip means this model is something you are working on, so it
-    // goes on sanggar's list. Merely opening a model does not.
-    if (INSIDE_SANGGAR && state.model) {
-      window.sanggar.note({
+    // goes on bengkel's list. Merely opening a model does not.
+    if (INSIDE_BENGKEL && state.model) {
+      window.bengkel.note({
         path: state.model.path,
         name: state.model.name.replace(/\.\w+$/, ''),
         what: `saved the clip "${name}"`,
@@ -1525,8 +1525,8 @@ window.addEventListener('beforeunload', (e) => {
  * exported first, because boneka reads files and not viewports.
  */
 
-if (INSIDE_SANGGAR) {
-  window.sanggar.onReceive(async (payload) => {
+if (INSIDE_BENGKEL) {
+  window.bengkel.onReceive(async (payload) => {
     if (!payload || !payload.path) return;
     const arrived = await openPath(payload.path);
     if (arrived) {
@@ -1549,7 +1549,7 @@ if (INSIDE_SANGGAR) {
       const saved = await api('/api/export/save', {
         name: base, ext: 'glb', data: toBase64(await buildGLB()),
       });
-      await window.sanggar.handOver('boneka', saved.path, state.model.name);
+      await window.bengkel.handOver('boneka', saved.path, state.model.name);
       toast('Sent to boneka.');
     } catch (err) {
       toast(`Could not send it: ${err.message}`, true);
@@ -1560,8 +1560,8 @@ if (INSIDE_SANGGAR) {
   };
 }
 
-/* What sanggar's menu bar drives. Every tool it hosts answers to this one
- * name, so sanggar needs to know nothing about any of them. */
+/* What bengkel's menu bar drives. Every tool it hosts answers to this one
+ * name, so bengkel needs to know nothing about any of them. */
 window.__toolCommand = (name) => command(name);
 
 /* One handle on the whole app, for the tests that drive it in a real browser
@@ -1617,7 +1617,7 @@ function command(name) {
 
 window.gerak = {
   state, view, player, api, command, openPath, native: NATIVE,
-  history, undo, redo, copyKeys, pasteKeys, insideSanggar: INSIDE_SANGGAR,
+  history, undo, redo, copyKeys, pasteKeys, insideSanggar: INSIDE_BENGKEL,
   mirrorOf: (name, names) => findMirror(name, names),
   get clipboard() { return clipboard; },
   openModel, keyPose, setFrame, renderTracks, loadLibrary,

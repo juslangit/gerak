@@ -42,7 +42,10 @@ try {
   say(rows.length > 0, `the list on screen shows ${rows.length} of them`);
 
   // ── open one ──────────────────────────────────────────────────────
-  const pick = rigged.find((i) => i.joints >= 20 && i.size < 12e6) || rigged[0];
+  // Not one of gerak's own exports: those come and go with the tests, and
+  // which one sorts first changes whenever the library is rescanned.
+  const pick = rigged.find((i) => i.joints >= 20 && i.size < 12e6
+    && !i.path.includes('/exports/')) || rigged[0];
   await g.openModel(pick);
   await until('the model', () => g.state.bones.length);
   say(true, `opened ${pick.name} — ${g.state.bones.length} joints`);
@@ -339,10 +342,17 @@ try {
   /* Ask the app which joint is the opposite number rather than guessing by
    * swapping the word, because on a Meshy rig the two sides carry different
    * node numbers and a guessed name exists nowhere. */
+  /* Find any joint that HAS an opposite number rather than guessing at a
+   * naming pattern — the rigs in the library do not agree on one, and which
+   * model the test opens changes whenever the library is rescanned. */
   const names = g.state.bones.map((b) => b.name);
-  const leftName = g.state.bones.find((b) => /Left(Arm|UpLeg)/.test(b.name))?.name;
-  const rightName = leftName && g.mirrorOf(leftName, names);
-  say(!!rightName, `the opposite of ${leftName} is ${rightName || 'NOT FOUND'}`);
+  const pair = names
+    .map((name) => [name, g.mirrorOf(name, names)])
+    .find(([, other]) => !!other);
+  const [leftName, rightName] = pair || [];
+  say(!!rightName, pair
+    ? `the opposite of ${leftName} is ${rightName}`
+    : `no joint on ${pick.name} has an opposite number`);
   if (leftName && rightName) {
     g.setFrame(0);
     const leftJoint = g.state.bones.find((b) => b.name === leftName);

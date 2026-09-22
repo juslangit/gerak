@@ -339,7 +339,20 @@ export function mirrorName(name) {
     const swap = { L: 'R', R: 'L', l: 'r', r: 'l' }[side];
     return gap + swap;
   });
-  return lettered;
+  if (lettered !== name) return lettered;
+
+  /* And the same convention with the separator eaten.
+   *
+   * three.js strips dots out of node names when it loads a .glb, so a rig
+   * written as `shoulder.L` — which is Blender's convention, and boneka's —
+   * arrives here as `shoulderL`. Requiring a separator meant mirroring found
+   * nothing on any model boneka had made, which is most of them.
+   *
+   * An upper-case L or R at the very end, after a lower-case letter or a
+   * digit, is a side. "Heel" and "Control" end in a lower-case l and are left
+   * alone. */
+  return name.replace(/([a-z0-9])([LR])(\d*)$/, (whole, before, side, index) =>
+    before + (side === 'L' ? 'R' : 'L') + index);
 }
 
 /**

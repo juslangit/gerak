@@ -364,6 +364,46 @@ test('the .L and _R conventions swap too', () => {
   assert(mirrorName('Bip01_R_Hand') === 'Bip01_L_Hand', `got ${mirrorName('Bip01_R_Hand')}`);
 });
 
+test('a side letter survives three.js eating the separator', () => {
+  /* three.js strips dots from node names as it loads a .glb, so Blender's
+   * and boneka's `shoulder.L` arrives as `shoulderL`. Requiring a separator
+   * meant mirroring found nothing on anything boneka had made. */
+  const cases = [
+    ['shoulderL', 'shoulderR'], ['forearmR', 'forearmL'],
+    ['handL', 'handR'], ['thighL', 'thighR'], ['footR', 'footL'],
+    ['upperarmL2', 'upperarmR2'],
+  ];
+  for (const [from, to] of cases) {
+    assert(mirrorName(from) === to, `${from} should mirror to ${to}, got ${mirrorName(from)}`);
+  }
+});
+
+test('a word merely ending in l or r is not mistaken for a side', () => {
+  for (const name of ['Heel', 'Control', 'Shoulder', 'Collar', 'Spine', 'hips', 'neck']) {
+    assert(mirrorName(name) === name,
+      `${name} should have no side, got ${mirrorName(name)}`);
+  }
+});
+
+test('the joints of a boneka rig all find their opposite', () => {
+  // The names exactly as gerak sees them after loading one of boneka's .glb
+  const names = ['hips', 'spine', 'neck', 'head',
+                 'shoulderL', 'upperarmL', 'forearmL', 'handL',
+                 'shoulderR', 'upperarmR', 'forearmR', 'handR',
+                 'thighL', 'shinL', 'footL', 'thighR', 'shinR', 'footR'];
+  const sided = names.filter((n) => /[LR]$/.test(n));
+  for (const name of sided) {
+    const other = findMirror(name, names);
+    assert(other && other !== name, `${name} found no opposite`);
+    assert(findMirror(other, names) === name,
+      `${name} -> ${other} does not come back`);
+  }
+  assert(sided.length === 14, `expected 14 sided joints, counted ${sided.length}`);
+  for (const middle of ['hips', 'spine', 'neck', 'head']) {
+    assert(findMirror(middle, names) === null, `${middle} should have no opposite`);
+  }
+});
+
 test('a joint with no side is left alone', () => {
   for (const name of ['Hips', 'Spine', 'Head', 'mixamorigSpine1_4']) {
     assert(mirrorName(name) === name, `${name} should not have a side`);

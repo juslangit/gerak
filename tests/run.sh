@@ -42,7 +42,7 @@ home = os.path.expanduser("~")
 print(urllib.parse.quote(json.dumps([
   {"path": home + "/Desktop/project/game/referee-for-fun/assets/characters/crowd_a_stand.glb",
    "template": "biped", "label": "Human"},
-  {"path": home + "/Desktop/project/ai/boneka/sessions/shots/dog.glb",
+  {"path": home + "/Desktop/project/3d/bengkel/boneka/sessions/shots/dog.glb",
    "template": "quadruped", "label": "Dog"},
 ])))
 PY
