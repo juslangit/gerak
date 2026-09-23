@@ -143,6 +143,46 @@ try {
       'and only the one actually edited is waiting to be saved');
   }
 
+  // (c) shortening a clip must shorten what the game gets
+  {
+    g.openAnim(0); await wait(150);
+    const full = g.state.clip.frames;
+    const keys = g.state.clip.totalKeys();
+    const half = Math.max(2, Math.floor(full / 2));
+
+    const field = document.querySelector('#length-field');
+    field.value = String(half);
+    field.dispatchEvent(new Event('input'));
+    await wait(120);
+
+    say(g.state.clip.frames === half, `limited the clip from ${full} to ${half} frames`);
+    say(g.state.clip.totalKeys() === keys,
+      'the keys past the end are kept, not deleted');
+    const past = g.state.clip.keysPastEnd();
+    say(past > 0, `${past} keys now sit after the end`);
+
+    const tag = document.querySelector('#anim-list .anim-row.is-open .tag-trim');
+    say(!!tag && tag.textContent.includes(String(past)),
+      'and the panel says so on the row');
+
+    // What would actually be written:
+    const out = g.state.clip.exportKeys([...g.state.clip.tracks.keys()][0]);
+    say(out[out.length - 1].f === half,
+      `what leaves gerak ends at ${out[out.length - 1].f}, not ${full}`);
+    say(out.every((k) => k.f <= half), 'and carries nothing past the end');
+
+    const made = g.state.clip.toAnimationClip(g.state.bones);
+    say(Math.abs(made.duration - half / g.state.clip.fps) < 1e-6,
+      'the exported animation is as long as the timeline says');
+    say(made.tracks.every((t) => t.times[t.times.length - 1] <= half / g.state.clip.fps + 1e-6),
+      'and not one of its tracks runs past the end');
+
+    field.value = String(full);
+    field.dispatchEvent(new Event('input'));
+    await wait(120);
+    say(g.state.clip.keysPastEnd() === 0, 'lengthening it again brings them back');
+  }
+
   // ── used or unused, beside the keys ───────────────────────────────
   if (where) {
     await until('the usage tags', () => state_usage());

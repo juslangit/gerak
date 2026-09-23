@@ -187,6 +187,51 @@ def _angle_between(a, b):
     return 2.0 * math.acos(d)
 
 
+def sample(keys, frame):
+    """The pose at a frame, the way gerak's timeline shows it.
+
+    Matches `Clip.sample` in clip.js: hold before the first key and after the
+    last, straight lines in between.
+    """
+    if frame <= keys[0]["f"]:
+        return list(keys[0]["q"]), list(keys[0]["p"])
+    if frame >= keys[-1]["f"]:
+        return list(keys[-1]["q"]), list(keys[-1]["p"])
+
+    i = 0
+    while i < len(keys) - 1 and keys[i + 1]["f"] <= frame:
+        i += 1
+    a, b = keys[i], keys[i + 1]
+    t = (frame - a["f"]) / (b["f"] - a["f"])
+    return (_nlerp(a["q"], b["q"], t),
+            [a["p"][j] + (b["p"][j] - a["p"][j]) * t for j in range(3)])
+
+
+def clamp(keys, frames):
+    """Cut a joint's keys to the length the clip actually is.
+
+    The clip's length is the animation's length. Set a 45-frame animation to
+    end at 20 and it is a 20-frame animation: the keys after 20 are not
+    written, and a key is placed exactly at 20 holding the pose you can see
+    there — sampled, because the end of the clip usually falls between two
+    keys rather than on one.
+
+    This is the half that was missing. Both exporters only ever *extended* a
+    track to reach the end of the clip, never shortened one, so shortening a
+    clip changed what gerak played and nothing about what it wrote: a glTF
+    animation is exactly as long as its last key, so the game kept getting
+    all 45 frames.
+    """
+    if not frames or not keys:
+        return [dict(k) for k in keys]
+
+    out = [{"f": k["f"], "q": list(k["q"]), "p": list(k["p"])}
+           for k in keys if k["f"] < frames]
+    q, p = sample(keys, frames)
+    out.append({"f": frames, "q": q, "p": p})
+    return out
+
+
 def thin(keys, angle_tol=0.002, pos_tol=1e-4):
     """Drop the keys a straight line between their neighbours already covers.
 
@@ -295,7 +340,7 @@ def build_animation(clip, nodes, blob, thinning=True):
     fps = float(clip.get("fps") or 24)
     frames = int(clip.get("frames") or 0)
     samplers, channels = [], []
-    missing, before, after = [], 0, 0
+    missing, before, after, trimmed = [], 0, 0, 0
 
     for name, raw in sorted((clip.get("tracks") or {}).items()):
         if not raw:
@@ -309,13 +354,13 @@ def build_animation(clip, nodes, blob, thinning=True):
 
         keys = sorted(raw, key=lambda k: k["f"])
 
-        # A glTF animation is exactly as long as its last key, so a 48-frame
-        # clip whose last pose was keyed at frame 36 would arrive in the game
-        # as a 36-frame animation and every loop would be wrong. The timeline
-        # holds that pose out to the end, so write the hold down as a key.
-        if frames and keys[-1]["f"] < frames:
-            last = keys[-1]
-            keys = keys + [{"f": frames, "q": list(last["q"]), "p": list(last["p"])}]
+        # A glTF animation is exactly as long as its last key, so the clip's
+        # length has to be made true on the way out in both directions: a
+        # 48-frame clip last keyed at 36 gets a key at 48 holding that pose,
+        # and a 45-frame track on a clip shortened to 20 loses everything
+        # after 20 and gains a key at 20.
+        trimmed += sum(1 for k in keys if k["f"] > frames) if frames else 0
+        keys = clamp(keys, frames)
 
         before += len(keys)
         if thinning:
@@ -347,7 +392,8 @@ def build_animation(clip, nodes, blob, thinning=True):
     animation = {"name": clip.get("name") or "clip",
                  "samplers": samplers, "channels": channels}
     return animation, {"missing": missing, "keys_before": before,
-                       "keys_after": after, "joints": len(channels)}
+                       "keys_after": after, "trimmed": trimmed,
+                       "joints": len(channels)}
 
 
 # --------------------------------------------------------------------------
@@ -545,6 +591,7 @@ def push(path, clips, remove=(), thinning=True, backup_into=None):
         "missing_joints": sorted({m for n in notes for m in n["missing"]}),
         "keys_before": sum(n["keys_before"] for n in notes),
         "keys_after": sum(n["keys_after"] for n in notes),
+        "trimmed": sum(n["trimmed"] for n in notes),
         "bytes_before": before,
         "bytes_after": os.path.getsize(path),
         "collected": gc.get("collected", False),

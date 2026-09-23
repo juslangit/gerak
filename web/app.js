@@ -650,6 +650,7 @@ function renderAnims() {
   list.innerHTML = set.entries.map((entry, i) => {
     const clip = entry.clip;
     const keys = clip ? clip.totalKeys() : null;
+    const past = clip ? clip.keysPastEnd() : 0;
     const frames = clip ? clip.frames
       : (set.sources.get(entry.from) ? Math.round(set.sources.get(entry.from).duration * 24) : 0);
     return `
@@ -663,6 +664,7 @@ function renderAnims() {
             <span class="tag">${frames} frames</span>
             ${keys === null ? '<span class="tag tag-quiet">not opened yet</span>'
                             : `<span class="tag tag-rig">${keys} keys</span>`}
+            ${past ? `<span class="tag tag-trim" title="This animation is ${clip.frames} frames long, and ${past} key${past === 1 ? ' sits' : 's sit'} after the end. They are kept, so lengthening it brings them back, but they are not written to the game.">${past} after the end</span>` : ''}
             ${usageTag(entry)}
           </span>
         </button>
@@ -1851,6 +1853,11 @@ $('#btn-push').onclick = async () => {
      * animation that was squashing or stretching a bone in the original file
      * comes back without that part. Say so rather than let it be noticed in
      * the game — several of his Meshy characters animate scale. */
+    if (result.trimmed) {
+      toast(`${result.trimmed} key${result.trimmed === 1 ? '' : 's'} after the end of `
+        + `${result.trimmed === 1 ? 'a clip was' : 'the clips were'} not written — `
+        + 'the animations are as long as the timeline says.');
+    }
     if (result.lost_scale && result.lost_scale.length) {
       toast(`Note: ${result.lost_scale.join(', ')} had scaling in the original, `
             + 'which gerak does not animate — that part is gone. '

@@ -230,6 +230,48 @@ def main():
     paths = [c["target"]["path"] for c in travelling["channels"]]
     check("translation" in paths, "a joint that does travel gets a translation track")
 
+    # ── shortening a clip really shortens the animation ────────────────
+    section("a 45-frame animation limited to 20 frames")
+    long_clip = a_clip(was[2], joints, frames=45)
+    long_clip["frames"] = 20                      # keys still run to 45
+    out = ga.push(target, [long_clip], thinning=False)
+    check(out["trimmed"] > 0,
+          "the keys past the end were trimmed (%d of them)" % out["trimmed"])
+
+    doc, blob = ga.read_glb(target)
+    short = [a for a in doc["animations"] if a.get("name") == was[2]][0]
+    ends = []
+    for sampler in short["samplers"]:
+        times = read_accessor(doc, blob, sampler["input"])
+        ends.append(round(times[-1], 6))
+    check(set(ends) == {round(20 / 24, 6)},
+          "every track ends at 20 frames (%.4fs), not 45" % (20 / 24))
+    check(all(t <= 20 / 24 + 1e-6
+              for s in short["samplers"]
+              for t in read_accessor(doc, blob, s["input"])),
+          "and not one key was written past the end")
+
+    # ...and the pose at the end is the one the timeline shows there, not the
+    # one that happened to be keyed last.
+    full = sorted(long_clip["tracks"][joints[0]], key=lambda k: k["f"])
+    want_q, _want_p = ga.sample(full, 20)
+    chan = next(c for c in short["channels"]
+                if c["target"]["path"] == "rotation"
+                and c["target"]["node"] == ga.node_indices(doc)[ga.sanitize(joints[0])])
+    got = read_accessor(doc, blob, short["samplers"][chan["sampler"]]["output"])[-4:]
+    check(all(abs(a - b) < 1e-5 for a, b in zip(got, want_q)),
+          "the last key holds the pose the timeline shows at frame 20")
+
+    section("...and lengthening one still holds the pose out to the end")
+    held = a_clip(was[3], joints, frames=12)
+    held["frames"] = 40                           # keys stop at 12
+    ga.push(target, [held], thinning=False)
+    doc, blob = ga.read_glb(target)
+    grown = [a for a in doc["animations"] if a.get("name") == was[3]][0]
+    times = read_accessor(doc, blob, grown["samplers"][0]["input"])
+    check(abs(times[-1] - 40 / 24) < 1e-6,
+          "a clip keyed to 12 but 40 frames long still runs to 40")
+
     # ── the file does not grow without end ─────────────────────────────
     section("pushing the same thing ten times")
     sizes = []

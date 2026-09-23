@@ -240,6 +240,47 @@ export class Clip {
   }
 
   /**
+   * One joint's keys as they should leave gerak.
+   *
+   * The clip's length is the animation's length, in both directions. A
+   * 48-frame clip last keyed at 36 gets a key at 48 holding that pose, or it
+   * would arrive in a game as a 36-frame animation and every loop would be
+   * wrong. And a 45-frame track on a clip shortened to 20 loses everything
+   * after 20 and gains a key at 20.
+   *
+   * That second half was missing, in here and in the .glb writer alike: both
+   * only ever extended a track, never shortened one. So shortening a clip
+   * changed what gerak played and nothing at all about what it wrote, and a
+   * 45-frame animation trimmed to 20 went into the game still 45 frames long.
+   *
+   * The key at the end is **sampled** rather than copied from the last key
+   * before it, because the end of a clip usually falls between two keys, and
+   * the pose that belongs there is the one you can see on the timeline.
+   *
+   * Nothing is thrown away: the keys past the end stay in the clip, so
+   * lengthening it again brings them back.
+   */
+  exportKeys(name) {
+    const raw = this.tracks.get(name);
+    if (!raw || !raw.length) return [];
+    const end = this.frames;
+    if (!end) return raw.map((k) => ({ f: k.f, q: k.q.slice(), p: k.p.slice() }));
+
+    const keys = raw.filter((k) => k.f < end)
+      .map((k) => ({ f: k.f, q: k.q.slice(), p: k.p.slice() }));
+    const at = this.sample(name, end);
+    keys.push({ f: end, q: at.q.toArray(), p: at.p.toArray() });
+    return keys;
+  }
+
+  /** How many keys sit after the end of the clip, and so are not exported. */
+  keysPastEnd() {
+    let n = 0;
+    for (const track of this.tracks.values()) n += track.filter((k) => k.f > this.frames).length;
+    return n;
+  }
+
+  /**
    * Turn this into a three.js AnimationClip, which is the shape both the
    * player and the .glb exporter understand.
    *
@@ -256,17 +297,11 @@ export class Clip {
       if (!bone || !rawKeys.length) continue;
 
       /* A glTF file has no idea how long an animation is meant to be: its
-       * length is simply the time of the last key in it. So a 48-frame clip
-       * whose last pose is keyed at frame 36 would arrive in Godot as a
-       * 36-frame animation, and every loop would be wrong.
-       *
-       * The timeline holds the last pose out to the end, so write that hold
-       * down as a real key. What you see is then what the engine plays. */
-      const keys = rawKeys.slice();
-      const last = keys[keys.length - 1];
-      if (last.f < this.frames) {
-        keys.push({ f: this.frames, q: last.q.slice(), p: last.p.slice() });
-      }
+       * length is simply the time of the last key in it. `exportKeys` makes
+       * the clip's own length true, both by holding a short track out to the
+       * end and by cutting a long one back to it. */
+      const keys = this.exportKeys(name);
+      if (!keys.length) continue;
 
       const times = new Float32Array(keys.map((k) => k.f / this.fps));
 

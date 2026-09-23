@@ -204,6 +204,26 @@ break the moment `backpedal` stops existing, and that is the one thing about
 this that is easy to get wrong. Undo puts a merge back, and nothing has
 reached the disk until you update the game.
 
+### The length field is the animation's length
+
+The **frames** box beside the playhead is not just how far the timeline
+scrolls — it is how long the animation is, and it is honoured in both
+directions when the animation leaves gerak:
+
+- a clip 48 frames long whose last pose is keyed at 36 gets a key at 48
+  holding that pose, or it would arrive in a game as a 36-frame animation
+  and every loop would be wrong;
+- a clip cut from 45 frames to 20 is written as 20 frames, and the keys after
+  20 are not written at all.
+
+The key at the end is *sampled*, not copied from the last key before it,
+because the end of a clip usually falls between two keys — so what the game
+plays at the last frame is what the timeline shows there.
+
+Shortening a clip **does not delete anything**. The keys past the end stay
+where they are, the row says how many (`25 after the end`), and lengthening it
+again brings them back.
+
 ### Save and Update the game are two different places
 
 This trips people up, so it is worth saying plainly:

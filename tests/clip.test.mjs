@@ -364,6 +364,98 @@ test('shifting a clip moves every key and never goes below zero', () => {
 
 // ── report ──────────────────────────────────────────────────────────
 
+// ── the clip's length is the animation's length ──────────────────────
+//
+// Luqman: "i have an animation that have 45 frame but i only need 20 frame,
+// so i limit the end to 20. the problem now is in the game or whenever i
+// reopen the app, the animation still has 45 frame and not 20."
+//
+// Both exporters only ever extended a track to reach the end of the clip and
+// never shortened one, so shortening changed what gerak played and nothing
+// about what it wrote.
+
+test('shortening a clip drops the keys after the new end', () => {
+  const clip = new Clip({ frames: 45, fps: 24 });
+  for (let f = 0; f <= 45; f += 5) {
+    clip.setKey('hip', f, new THREE.Quaternion(0, 0, f / 90, 1).normalize(), new THREE.Vector3());
+  }
+  assert(clip.keysOf('hip').length === 10, `${clip.keysOf('hip').length} keys to start`);
+
+  clip.frames = 20;
+  const out = clip.exportKeys('hip');
+  assert(out[out.length - 1].f === 20, `ends at ${out[out.length - 1].f}, not 20`);
+  assert(out.every((k) => k.f <= 20), 'nothing after the end is written');
+  assert(out.length === 5, `expected 5 keys (0,5,10,15,20), got ${out.length}`);
+});
+
+test('the key at the new end is the pose you can see there', () => {
+  const clip = new Clip({ frames: 45, fps: 24 });
+  const a = new THREE.Quaternion(), b = new THREE.Quaternion(0, 0, 0.7071, 0.7071);
+  clip.setKey('hip', 10, a, new THREE.Vector3(0, 0, 0));
+  clip.setKey('hip', 30, b, new THREE.Vector3(0, 10, 0));
+
+  clip.frames = 20;                       // halfway between the two keys
+  const out = clip.exportKeys('hip');
+  const end = out[out.length - 1];
+  assert(end.f === 20, `ends at ${end.f}`);
+
+  /* Compared number by number, not through the dot product. A quaternion
+   * here is not quite unit length — (0,0,0.7071,0.7071) has a squared norm of
+   * 0.999994 — so `1 - |a.dot(b)|` is 6e-6 between two values that are
+   * identical. The same trap caught the app suite earlier today. */
+  const shown = clip.sample('hip', 20);
+  const same = shown.q.toArray().every((v, i) => Math.abs(v - end.q[i]) < 1e-9);
+  assert(same, `the exported end key ${end.q} is not what the timeline shows `
+    + `${shown.q.toArray()}`);
+  close(end.p[1], 5, 1e-5, 'and so does its position');
+});
+
+test('lengthening a clip again brings the keys back', () => {
+  const clip = new Clip({ frames: 45, fps: 24 });
+  for (let f = 0; f <= 45; f += 15) {
+    clip.setKey('hip', f, new THREE.Quaternion(), new THREE.Vector3());
+  }
+  clip.frames = 20;
+  assert(clip.exportKeys('hip').length === 3, 'trimmed on the way out');
+  clip.frames = 45;
+  assert(clip.exportKeys('hip').length === 4, 'and all four are back');
+  assert(clip.keysOf('hip').length === 4, 'because nothing was ever deleted');
+});
+
+test('a short track is still held out to the end', () => {
+  const clip = new Clip({ frames: 48, fps: 24 });
+  clip.setKey('hip', 0, new THREE.Quaternion(), new THREE.Vector3());
+  clip.setKey('hip', 36, new THREE.Quaternion(0, 0, 0.3, 0.95), new THREE.Vector3());
+  const out = clip.exportKeys('hip');
+  assert(out[out.length - 1].f === 48, `ends at ${out[out.length - 1].f}`);
+  assert(out.length === 3, `expected 3, got ${out.length}`);
+});
+
+test('the exported AnimationClip is as long as the clip says', () => {
+  const { bones } = makeRig();
+  const clip = new Clip({ frames: 45, fps: 24 });
+  for (let f = 0; f <= 45; f += 5) {
+    clip.setKey(bones[1].name, f, qz(f), bones[1].position);
+  }
+  clip.frames = 20;
+  const made = clip.toAnimationClip(bones);
+  close(made.duration, 20 / 24, 1e-6, 'duration');
+  for (const track of made.tracks) {
+    const last = track.times[track.times.length - 1];
+    close(last, 20 / 24, 1e-6, `${track.name} ends with the clip`);
+  }
+});
+
+test('keysPastEnd counts what shortening has put out of reach', () => {
+  const clip = new Clip({ frames: 45, fps: 24 });
+  for (let f = 0; f <= 45; f += 5) {
+    clip.setKey('hip', f, new THREE.Quaternion(), new THREE.Vector3());
+  }
+  assert(clip.keysPastEnd() === 0, 'nothing past the end at full length');
+  clip.frames = 20;
+  assert(clip.keysPastEnd() === 5, `expected 5 (25,30,35,40,45), got ${clip.keysPastEnd()}`);
+});
+
 console.log('\ngerak — animation maths\n');
 console.log(results.join('\n'));
 console.log(`\n${passed} passed, ${failed} failed\n`);

@@ -1362,3 +1362,13 @@ kbd {
   background: #2b1a1a;
 }
 .btn-danger:hover:not(:disabled) { background: #3a2121; border-color: var(--warn); }
+
+/* Keys that sit after the end of the clip. Shortening an animation does not
+   delete them — lengthening it again brings them back — but they are not
+   what the game gets, and an animation quietly carrying keys nobody can see
+   is exactly how a 45-frame clip went into a game after being cut to 20. */
+.tag-trim {
+  color: #e0b473;
+  border-color: #5c4526;
+  background: #2a2015;
+}
