@@ -62,6 +62,7 @@ const state = {
   clip: new Clip(),
   set: new AnimSet(),   // every animation this character has; clip is the open one
   game: null,           // the game project the open model lives in, if any
+  usage: null,          // which animations the game actually asks for, by name
   model: null,          // the library row that is open
   bones: [],
   frame: 0,
@@ -581,6 +582,10 @@ async function openModel(item) {
      * opening the file again. */
     await whichGame(item.path);
     openAnim(0, { quiet: true });
+    // Not awaited: it is a walk of the game's scripts, and the character
+    // should be on screen and posable before it comes back. The tags appear
+    // a moment later.
+    loadUsage();
 
     remember('gerak.lastModel', item.path);
     document.title = `${item.name} — gerak`;
@@ -623,6 +628,7 @@ function renderAnims() {
     where.textContent = 'Open a character to see its animations.';
     list.innerHTML = '';
     $('#btn-merge').disabled = true;
+    $('#btn-delete-anim').disabled = true;
     $('#btn-new-anim').disabled = true;
     return;
   }
@@ -650,6 +656,7 @@ function renderAnims() {
             <span class="tag">${frames} frames</span>
             ${keys === null ? '<span class="tag tag-quiet">not opened yet</span>'
                             : `<span class="tag tag-rig">${keys} keys</span>`}
+            ${usageTag(entry)}
           </span>
         </button>
       </div>`;
@@ -664,6 +671,44 @@ function renderAnims() {
   paintMergeButton();
 }
 
+/* Used or unused, beside the keys.
+ *
+ * "Used" means the game's own files say this animation's name out loud, in
+ * quotes — `play("run")`, `&"idle"`, a name in an exported array. That is
+ * what gerak can actually know from outside the game, and it is the same
+ * search that warns you before a delete.
+ *
+ * It is honest about being a search rather than a proof. A name a script
+ * builds at runtime — `_play("fb_" + kind)` — will read as unused when it is
+ * not, which is why deleting an "unused" animation still asks first, and why
+ * the tag's tooltip says where the answer came from. It earns its place
+ * anyway: on red-card's footballer, 17 of 53 animations are tennis and
+ * volleyball moves that football never asks for.
+ */
+function usageTag(entry) {
+  if (!state.usage || !state.usage.counts) return '';
+  const name = entry.from || entry.name;
+  const count = state.usage.counts[name];
+  if (count === undefined) return '';          // added here, not in the file yet
+  const game = state.usage.game || 'the game';
+  return count
+    ? `<span class="tag tag-used" title="${escapeHTML(game)} asks for &quot;${escapeHTML(name)}&quot; in ${count} place${count === 1 ? '' : 's'}">used${count > 1 ? ` ×${count}` : ''}</span>`
+    : `<span class="tag tag-unused" title="Nothing in ${escapeHTML(game)} names &quot;${escapeHTML(name)}&quot; — but a name built in code at runtime would not be found">unused</span>`;
+}
+
+/** Ask the game which of this character's animations it actually plays. */
+async function loadUsage() {
+  state.usage = null;
+  if (!state.model || !(state.game && state.game.here)) { renderAnims(); return; }
+  try {
+    const names = state.set.entries.map((e) => e.from).filter(Boolean);
+    if (!names.length) { renderAnims(); return; }
+    const answer = await api('/api/mentions', { model: state.model.path, names });
+    state.usage = answer;
+  } catch { /* the tags simply do not appear */ }
+  renderAnims();
+}
+
 function pickedAnims() {
   return [...document.querySelectorAll('.anim-pick')]
     .filter((b) => b.checked).map((b) => +b.dataset.i);
@@ -671,11 +716,12 @@ function pickedAnims() {
 
 function paintMergeButton() {
   const picked = pickedAnims();
-  const btn = $('#btn-merge');
-  btn.disabled = picked.length !== 2;
+  $('#btn-merge').disabled = picked.length !== 2;
+  $('#btn-delete-anim').disabled = picked.length === 0;
   $('#anim-note').textContent = picked.length === 2
     ? `${state.set.entries[picked[0]].name} and ${state.set.entries[picked[1]].name}`
-    : picked.length ? 'Tick one more.' : '';
+    : picked.length === 1 ? `${state.set.entries[picked[0]].name} — tick one more to merge`
+    : picked.length ? `${picked.length} ticked` : '';
 }
 
 /**
@@ -686,13 +732,14 @@ function paintMergeButton() {
  * doing that to all twelve on open would make every character slow to look
  * at for the sake of eleven you were not going to edit.
  */
-function openAnim(i, { quiet = false } = {}) {
+function openAnim(i, { quiet = false, stash = true, keepHistory = false } = {}) {
   const set = state.set;
   if (i < 0 || i >= set.length) return;
   if (i === set.at && set.current && set.current.clip === state.clip) return;
 
   player.pause();
-  set.stash(state.clip);
+  // Not after a delete: the clip in hand belongs to an entry that is gone.
+  if (stash) set.stash(state.clip);
 
   const clip = set.open(i, (source) =>
     Clip.fromAnimationClip(source, state.bones, view.restPose,
@@ -707,8 +754,14 @@ function openAnim(i, { quiet = false } = {}) {
 
   /* An animation is a different piece of work from the one before it, so the
    * undo stack starts again here. Undoing across a switch would put keys from
-   * one animation back into another. */
-  history.clear();
+   * one animation back into another.
+   *
+   * Not after a delete, though. Deleting the open animation has to open
+   * another one, and clearing the stack there would throw away the
+   * photograph taken a moment earlier — which is the one that has the
+   * deleted animation in it. That made delete the only action in the panel
+   * you could not undo. */
+  if (!keepHistory) history.clear();
   setFrame(0);
   renderBoneTree();
   renderTracks();
@@ -780,6 +833,70 @@ async function mergeAnims() {
         + 'Press Update the game to make it so in the file.');
 }
 
+/**
+ * Delete the ticked animations.
+ *
+ * The warning is the point of this, not the deleting. An animation is a
+ * name, and Godot plays it by that name, so removing one from the .glb is
+ * harmless right up until a line of GDScript asks for it — and then it is a
+ * runtime error in a game that worked an hour ago. So every delete shows
+ * what it is about to take, and for anything the game still names, the lines
+ * that name it.
+ *
+ * Nothing reaches the disk here. The animation leaves the list and its name
+ * joins the queue for the next Update the game; undo puts it back.
+ */
+async function deleteAnims() {
+  const picked = pickedAnims();
+  if (!picked.length) return;
+
+  const entries = picked.map((i) => state.set.entries[i]);
+  const names = entries.map((e) => e.name);
+  const hits = await mentionsOf(entries.map((e) => e.from).filter(Boolean));
+
+  const used = entries.filter((e) => (hits[e.from] || []).length);
+  const warn = used.map((e) => {
+    const found = hits[e.from];
+    return `<p><strong>${escapeHTML(e.name)}</strong> is named in `
+      + `${found.length} place${found.length === 1 ? '' : 's'} in the game:</p>`
+      + '<ul>' + found.slice(0, 5).map((h) =>
+        `<li><code>${escapeHTML(h.file)}:${h.line}</code> ${escapeHTML(h.text)}</li>`).join('')
+      + '</ul>';
+  }).join('');
+
+  const answer = await sheet({
+    title: names.length === 1 ? `Delete "${names[0]}"?` : `Delete ${names.length} animations?`,
+    body: `<p>${names.map((n) => `<code>${escapeHTML(n)}</code>`).join(' ')}</p>`
+      + (used.length
+        ? `<p>${used.length === names.length ? 'That is' : `${used.length} of those are`}
+           still asked for by name in the game. Deleting ${used.length === 1 ? 'it' : 'them'}
+           will break those lines the next time you press Update the game.</p>`
+        : '<p>Nothing in the game names ' + (names.length === 1 ? 'it' : 'them')
+          + '. Note that a name a script builds as it runs would not be found by a search.</p>')
+      + '<p>They leave the list now, and the game\'s file the next time you press '
+      + 'Update&nbsp;the&nbsp;game. Undo puts them back.</p>',
+    warn,
+    actions: [
+      { id: 'go', label: used.length ? 'Delete anyway' : 'Delete', primary: !used.length },
+      { id: null, label: 'Cancel' },
+    ],
+  });
+  if (!answer) return;
+
+  history.push(names.length === 1 ? `deleting "${names[0]}"`
+                                  : `deleting ${names.length} animations`);
+  const done = state.set.remove(picked);
+  if (!done) return;
+
+  /* The clip on screen belonged to an entry that no longer exists, so it
+   * must not be put down on whatever entry took its place. */
+  if (done.lostOpen) openAnim(state.set.at, { stash: false, keepHistory: true });
+  renderAnims();
+  paintSaveState();
+  toast(`Deleted ${done.names.join(', ')}. `
+        + 'Press Update the game to take them out of the file.');
+}
+
 /** Where the game's own files say these animation names out loud. */
 async function mentionsOf(names) {
   if (!state.model || !(state.game && state.game.here)) return {};
@@ -801,6 +918,7 @@ async function whichGame(path) {
 }
 
 $('#btn-merge').onclick = mergeAnims;
+$('#btn-delete-anim').onclick = deleteAnims;
 
 $('#btn-new-anim').onclick = () => {
   if (!state.model) return;
@@ -2078,7 +2196,7 @@ window.gerak = {
   openModel, keyPose, setFrame, renderTracks, loadLibrary, reference,
   renderLimbs, setChainMode, togglePin, applyPins,
   placeSkeleton, showRigPanel, setFacing,
-  openAnim, renderAnims, mergeAnims, sheet, showTab, whichGame,
+  openAnim, renderAnims, mergeAnims, deleteAnims, loadUsage, sheet, showTab, whichGame,
 };
 
 // ── go ──────────────────────────────────────────────────────────────

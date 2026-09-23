@@ -1232,21 +1232,27 @@ kbd {
 
 .tag-quiet { opacity: .6; font-style: italic; letter-spacing: 0; }
 
+/* Three buttons and a note, in a 320px panel. The note goes on its own line
+   rather than being squeezed to one letter beside them. */
 .anim-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 10px 14px;
   border-top: 1px solid var(--line-soft);
   flex: none;
 }
 .anim-note {
+  flex-basis: 100%;
   font-size: 0.8rem;
   color: var(--ink-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-height: 1em;
 }
+.anim-foot .btn-small { padding: 7px 10px; font-size: 0.84rem; }
 
 /* The button that reaches out of gerak and into a game. It is deliberately
    not the primary amber: the primary action on this bar is Export, which
@@ -1331,3 +1337,28 @@ kbd {
   justify-content: flex-end;
   margin-top: 20px;
 }
+
+/* Used or unused, beside the keys.
+ *
+ * Green for used, because it is the reassuring answer — the game really does
+ * ask for this one. Unused is deliberately quiet rather than red: an
+ * animation the game never plays is information, not a fault, and plenty of
+ * them are perfectly good animations waiting for a feature. */
+.tag-used {
+  color: var(--ik);
+  border-color: #245c47;
+  background: #16281f;
+}
+.tag-unused {
+  color: var(--ink-faint);
+  border-color: var(--line);
+  background: transparent;
+}
+
+/* Deleting is the one thing in this panel that throws work away. */
+.btn-danger {
+  color: #f1a9a7;
+  border-color: #5c2f2e;
+  background: #2b1a1a;
+}
+.btn-danger:hover:not(:disabled) { background: #3a2121; border-color: var(--warn); }

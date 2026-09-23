@@ -140,6 +140,42 @@ animation says *not opened yet* until you touch it.
 timeline. It is added to the game's file under its own name rather than
 replacing anything, so spell the name the way the game will ask for it.
 
+### Used or unused
+
+Beside the keys, each animation says whether the game actually asks for it.
+On Red Card's footballer, 36 of its 53 animations are named somewhere in the
+game and **17 are not** — they are the tennis and volleyball moves that came
+along with the shared rig and that football never plays.
+
+"Used" means the game's own `.gd`, `.tscn`, `.tres`, `.cs`, `.json` and
+`.cfg` files say the name out loud **in quotes** — `play("run")`, `&"idle"`,
+a name sitting in an exported array. The count is how many lines say it, and
+hovering tells you.
+
+It is a search, not a proof, and the difference matters: a name a script
+builds while it runs — `_play("fb_" + kind)` — will read as unused when it is
+not. So treat *unused* as "nothing in the game mentions this", which is why
+deleting one still asks first.
+
+### Deleting an animation
+
+Tick one or more and press **Delete…**. gerak lists what is about to go, and
+for anything the game still names, the exact lines that name it:
+
+```
+backpedal is named in 7 places in the game:
+  scripts/footballer.gd:546   play("backpedal", 0.3, clampf(speed / …
+  scripts/footballer.gd:31    "backpedal": ["fb_backpedal", "backpedal"],
+```
+
+That warning is the point of the feature. An animation is a name, and Godot
+plays it by that name, so deleting one is harmless right up until a line of
+GDScript asks for it — and then it is a runtime error in a game that worked
+an hour ago.
+
+Nothing reaches the disk when you delete. The animation leaves the list and
+its name joins the queue for the next **Update the game**; undo puts it back.
+
 Two things to know about what you get:
 
 - The keys are **sampled every frame** rather than copied as curves. The

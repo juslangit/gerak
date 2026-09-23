@@ -183,6 +183,11 @@ const SHOTS_TO_TAKE = [
       g.setFrame(8);
       joint.rotation.z += 0.45;
       g.keyPose(8);
+      // Let the used/unused search come back before photographing it.
+      for (let i = 0; i < 100 && !(g.state.usage && g.state.usage.counts); i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+      g.renderAnims();
       const ticks = [...document.querySelectorAll('.anim-pick')];
       for (const i of [1, 2]) {
         if (!ticks[i]) continue;

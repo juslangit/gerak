@@ -348,23 +348,36 @@ def list_games():
     return out
 
 
-def mentions(root, names, cap=40):
-    """Find where a game's own files say an animation's name out loud.
+def mentions(root, names, keep=8):
+    """Find where a game's own files say each animation's name out loud.
 
-    This is the warning in front of a merge. Deleting "run2" from a .glb is
-    harmless right up until a line of GDScript asks the AnimationPlayer to
-    play it, and then it is a runtime error in a game that was working an
-    hour ago. Names are looked for in quotes - Godot writes play("run2") and
-    &"run2" - because a bare word like "run" appears in a hundred places
-    that have nothing to do with an animation.
+    This answers two questions with one walk: whether an animation is used by
+    the game at all, which is the tag beside the keys in the Animations
+    panel, and exactly which lines would break if it were deleted, which is
+    the warning in front of deleting one.
+
+    Names are looked for **in quotes** - Godot writes play("run2") and
+    &"run2" - because a bare word like "run" appears in a hundred places that
+    have nothing to do with an animation. The closing quote also stops "run"
+    matching inside "run2".
+
+    One combined pattern, one pass per line. Asking about one name and asking
+    about all fifty-three therefore cost the same walk, which matters because
+    the panel asks about all of them every time a character is opened.
+
+    `keep` is how many example lines are kept per name; the count is of every
+    hit, not only the kept ones. An earlier version capped the *total* hits
+    and returned early, which was harmless for a two-name merge and quietly
+    wrong here: every name the walk had not reached yet came back as unused.
     """
-    wanted = [n for n in names if n]
+    wanted = sorted({n for n in names if n}, key=len, reverse=True)
     if not wanted or not os.path.isdir(root):
-        return {}
+        return {}, {}
 
-    patterns = {n: re.compile(r"""["'&]%s["']""" % re.escape(n)) for n in wanted}
-    found = {n: [] for n in wanted}
-    total = 0
+    pattern = re.compile(r"""["'&](%s)["']"""
+                         % "|".join(re.escape(n) for n in wanted))
+    hits = {n: [] for n in wanted}
+    counts = {n: 0 for n in wanted}
 
     for here, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
@@ -378,18 +391,21 @@ def mentions(root, names, cap=40):
             except OSError:
                 continue
             for i, line in enumerate(lines, 1):
-                for name, pattern in patterns.items():
-                    if pattern.search(line):
-                        found[name].append({
+                seen = set()
+                for match in pattern.finditer(line):
+                    name = match.group(1)
+                    if name in seen:        # one line naming it twice is one line
+                        continue
+                    seen.add(name)
+                    counts[name] += 1
+                    if len(hits[name]) < keep:
+                        hits[name].append({
                             "file": os.path.relpath(full, root),
                             "line": i,
                             "text": line.strip()[:160],
                         })
-                        total += 1
-            if total >= cap:
-                return {k: v for k, v in found.items() if v}
 
-    return {k: v for k, v in found.items() if v}
+    return {k: v for k, v in hits.items() if v}, counts
 
 
 # --------------------------------------------------------------------------
@@ -784,10 +800,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "outside the allowed folders"}, 403)
             where = game_of(model)
             if not where:
-                return self.send_json({"game": None, "hits": {}})
+                return self.send_json({"game": None, "hits": {}, "counts": {}})
+            hits, counts = mentions(where["root"], body.get("names") or [])
             return self.send_json({
                 "game": where["game"],
-                "hits": mentions(where["root"], body.get("names") or []),
+                "hits": hits,        # example lines, for the warning
+                "counts": counts,    # every mention, for the used/unused tag
             })
 
         if path == "/api/push":

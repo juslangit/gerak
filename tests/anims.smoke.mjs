@@ -47,6 +47,8 @@ async function answerSheet(text) {
 window.confirm = () => true;
 window.prompt = () => null;
 
+const state_usage = () => window.gerak.state.usage && window.gerak.state.usage.counts;
+
 try {
   const g = await until('the app to start', () => window.gerak);
   await until('the library', () => g.state.library.length);
@@ -115,6 +117,81 @@ try {
       'and it is live, because something has been edited');
   } else {
     say(true, 'this character is not in a game project, so the button will ask which one');
+  }
+
+  // ── used or unused, beside the keys ───────────────────────────────
+  if (where) {
+    await until('the usage tags', () => state_usage());
+    const counts = g.state.usage.counts;
+    const used = Object.values(counts).filter(Boolean).length;
+    say(Object.keys(counts).length === inFile,
+      `the game was asked about all ${Object.keys(counts).length} animations`);
+    say(true, `${used} are named in ${where.game}, ${inFile - used} are not`);
+
+    const tags = [...document.querySelectorAll('#anim-list .tag-used, #anim-list .tag-unused')];
+    say(tags.length === inFile, `every row carries a used-or-unused tag (${tags.length})`);
+
+    // The tag must agree with the count for that row, not just exist.
+    const rows = [...document.querySelectorAll('#anim-list .anim-row')];
+    const wrong = rows.filter((row, i) => {
+      const name = g.state.set.entries[i].from;
+      const tag = row.querySelector('.tag-used, .tag-unused');
+      if (!tag) return true;
+      return tag.classList.contains('tag-used') !== !!counts[name];
+    });
+    say(wrong.length === 0, 'and each tag says what the search actually found');
+
+    const someUsed = Object.entries(counts).find(([, n]) => n > 1);
+    if (someUsed) {
+      const at = g.state.set.entries.findIndex((e) => e.from === someUsed[0]);
+      const tag = rows[at].querySelector('.tag-used');
+      say(tag && tag.textContent.includes(String(someUsed[1])),
+        `"${someUsed[0]}" shows its ${someUsed[1]} mentions on the tag`);
+    }
+  }
+
+  // ── deleting one, with the warning ────────────────────────────────
+  {
+    const before = g.state.set.length;
+    const counts = (g.state.usage && g.state.usage.counts) || {};
+    // Prefer one the game really uses, so the warning has something to say.
+    const target = g.state.set.entries.findIndex((e) => counts[e.from] > 0);
+    const at = target >= 0 ? target : 0;
+    const doomed = g.state.set.entries[at].name;
+
+    document.querySelectorAll('.anim-pick').forEach((b) => { b.checked = false; });
+    const box = [...document.querySelectorAll('.anim-pick')][at];
+    box.checked = true; box.dispatchEvent(new Event('change'));
+    say(!document.querySelector('#btn-delete-anim').disabled,
+      'one ticked and the Delete button wakes up');
+
+    const deleting = g.deleteAnims();
+    await until('the delete sheet', () => !document.querySelector('#sheet').hidden);
+    if (target >= 0) {
+      const warn = document.querySelector('#sheet-warn');
+      say(!warn.hidden && warn.textContent.includes(doomed),
+        `the warning names where the game asks for "${doomed}"`);
+      say(/\.(gd|tscn|tres|cs|json|cfg):\d+/.test(warn.textContent),
+        'and points at the file and line');
+    }
+    await answerSheet('Cancel');
+    await deleting;
+    say(g.state.set.length === before, 'cancelling deletes nothing');
+
+    const again = g.deleteAnims();
+    await answerSheet('Delete');
+    await again;
+    say(g.state.set.length === before - 1, `${doomed} was deleted`);
+    say(!g.state.set.names().includes(doomed), 'and is gone from the list');
+    say(g.state.set.removed.includes(doomed),
+      'and queued to come out of the game file');
+
+    g.undo();
+    await wait(120);
+    say(g.state.set.names().includes(doomed), 'undo brings it back');
+    say(g.state.set.removed.length === 0, 'and unqueues it');
+    document.querySelectorAll('.anim-pick').forEach((b) => { b.checked = false; });
+    g.renderAnims();
   }
 
   // ── merging two of them ───────────────────────────────────────────

@@ -197,6 +197,76 @@ test('a new animation is added to the file rather than replacing one', () => {
   assert(remove.length === 0, 'and nothing is deleted to make room for it');
 });
 
+// ── deleting ─────────────────────────────────────────────────────────
+
+test('deleting takes the animation out and queues its name for the file', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  const done = set.remove([7]);
+  assert(done.names.join() === 'run', done.names.join());
+  assert(set.length === 11, `expected 11, got ${set.length}`);
+  assert(!set.names().includes('run'), 'gone from the list');
+  assert(set.removed.join() === 'run', 'and queued for the .glb');
+});
+
+test('deleting several at once removes exactly those', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  const done = set.remove([0, 4, 11]);
+  assert(done.names.join() === 'argue,idle,walk', done.names.join());
+  assert(set.length === 9, `expected 9, got ${set.length}`);
+  for (const n of ['argue', 'idle', 'walk']) assert(!set.names().includes(n), n);
+  assert(set.names().includes('run'), 'and left the rest alone');
+});
+
+test('deleting above the open one does not change which is open', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  set.open(7, make);                    // run
+  const done = set.remove([1]);         // backhand, above it
+  assert(!done.lostOpen, 'the open one survived');
+  assert(set.current.name === 'run', `open: ${set.current.name}`);
+});
+
+test('deleting the open one says so, so its clip is not put down elsewhere', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  set.open(7, make);
+  const done = set.remove([7]);
+  assert(done.lostOpen, 'the caller is told');
+  assert(set.current && set.current.name !== 'run', `open: ${set.current.name}`);
+});
+
+test('deleting every animation leaves an empty one to work in', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  set.remove(twelve.map((_, i) => i));
+  assert(set.length === 1, `expected 1, got ${set.length}`);
+  assert(set.entries[0].name === 'athlete', set.entries[0].name);
+  assert(set.entries[0].from === null, 'it is not in the file');
+  assert(set.removed.length === 12, `all 12 queued, got ${set.removed.length}`);
+});
+
+test('a never-saved animation leaves nothing behind when deleted', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  const at = set.add('sketch');
+  set.remove([at]);
+  assert(set.length === 12, 'back to twelve');
+  assert(set.removed.length === 0, 'nothing to delete from the file, it was never in it');
+});
+
+test('undo brings a deleted animation back', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  const shot = set.toJSON();
+  set.remove([7]);
+  set.restore(shot);
+  assert(set.length === 12, `expected 12, got ${set.length}`);
+  assert(set.names().includes('run'), 'run is back');
+  assert(set.removed.length === 0, 'and is no longer queued for deletion');
+});
+
+test('deleting nothing is refused rather than half-done', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  assert(set.remove([]) === null, 'empty');
+  assert(set.remove([99]) === null, 'out of range');
+  assert(set.length === 12, 'untouched');
+});
+
 // ── undo ─────────────────────────────────────────────────────────────
 
 test('a photograph of the set shares nothing with it', () => {

@@ -51,8 +51,19 @@ const picked = cards[human >= 0 ? human : 0].querySelector('.ref-name').textCont
 cards[human >= 0 ? human : 0].click();
 for (let i = 0; i < 160 && $('#ref-pin').hidden; i++) await wait(250);
 
+/* Everything past this point needs Wikimedia to actually hand the picture
+ * over, and Commons rate-limits: run this suite a few times in an hour and
+ * the pin comes back as HTTP 429. That is not a fault in gerak, so it stops
+ * here and says why, rather than failing — or, as it used to, reading a null
+ * src and dying with a TypeError that looks nothing like a rate limit. */
+if ($('#ref-pin').hidden) {
+  lines.push('  --   Wikimedia would not hand the picture over (rate limited?),');
+  lines.push('       so pinning was not exercised. Try again in a few minutes.');
+  return { failed, text: lines.join('\n') };
+}
+
 check(!$('#ref-pin').hidden, `pinning puts it over the viewport (${picked.trim()})`);
-check($('#ref-pin-img').getAttribute('src').includes('/api/ref-file'),
+check(($('#ref-pin-img').getAttribute('src') || '').includes('/api/ref-file'),
   'and the picture is served off the disk, not fetched from the internet by the page');
 check($('#ref-pin-credit').textContent.includes('Public domain')
   || $('#ref-pin-credit').textContent.length > 0,

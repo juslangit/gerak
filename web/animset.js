@@ -34,12 +34,14 @@ export class AnimSet {
     this.removed = [];       // names merged away, to delete from the file
     this.at = -1;            // which entry is open
     this.model = '';
+    this.label = '';
   }
 
   /** Build the set from a freshly opened model. */
   static fromModel(item, sourceClips) {
     const set = new AnimSet();
     set.model = item.path;
+    set.label = item.name.replace(/\.(glb|gltf|fbx)$/i, '');
     for (const source of sourceClips || []) {
       const name = source.name || 'animation';
       set.sources.set(name, source);
@@ -48,12 +50,7 @@ export class AnimSet {
     /* A model with no animation in it still gets one entry to work in, so
      * posing a bare model is the same act as editing an existing walk rather
      * than a separate mode with its own rules. */
-    if (!set.entries.length) {
-      set.entries.push({
-        name: item.name.replace(/\.(glb|gltf|fbx)$/i, ''),
-        from: null, clip: null, dirty: false,
-      });
-    }
+    if (!set.entries.length) set.entries.push(set.blank());
     return set;
   }
 
@@ -86,6 +83,54 @@ export class AnimSet {
     entry.clip.dirty = false;
     entry.dirty = false;
     return entry.clip;
+  }
+
+  /** An empty animation named after the character, to work in. */
+  blank() {
+    return { name: this.label || 'untitled', from: null, clip: null, dirty: false };
+  }
+
+  /**
+   * Delete animations outright.
+   *
+   * Nothing is averaged or kept: the entries go, and the names they had in
+   * the file go into `removed` so that "Update the game" takes them out of
+   * the .glb as well. Until that button is pressed the file still has them
+   * and undo puts them straight back.
+   *
+   * Indices are spliced from the back so the earlier ones do not shift under
+   * the loop, and `at` is carried along — deleting the animation above the
+   * open one must not silently change which one is open.
+   *
+   * Hands back the names, and whether the open one was among them: the
+   * caller has a live clip in its hand that no longer belongs to any entry,
+   * and must not stash it onto whatever entry took its place.
+   */
+  remove(indices) {
+    const doomed = [...new Set(indices)].filter((i) => this.entries[i])
+      .sort((a, b) => b - a);
+    if (!doomed.length) return null;
+
+    const names = [];
+    let lostOpen = false;
+    for (const i of doomed) {
+      const entry = this.entries[i];
+      names.unshift(entry.name);
+      if (entry.from) this.removed.push(entry.from);
+      this.entries.splice(i, 1);
+      if (this.at === i) { lostOpen = true; this.at = -1; }
+      else if (this.at > i) this.at -= 1;
+    }
+
+    // A character always has somewhere to work, even with nothing left.
+    if (!this.entries.length) {
+      this.entries.push(this.blank());
+      this.at = -1;
+      lostOpen = true;
+    }
+    if (this.at < 0) this.at = Math.min(doomed[doomed.length - 1], this.entries.length - 1);
+
+    return { names, lostOpen };
   }
 
   /**
@@ -190,6 +235,7 @@ export class AnimSet {
   toJSON() {
     return {
       model: this.model,
+      label: this.label,
       at: this.at,
       removed: [...this.removed],
       entries: this.entries.map((e) => ({
@@ -204,6 +250,7 @@ export class AnimSet {
   restore(doc) {
     if (!doc) return this;
     this.model = doc.model || this.model;
+    this.label = doc.label || this.label;
     this.at = doc.at ?? -1;
     this.removed = [...(doc.removed || [])];
     this.entries = (doc.entries || []).map((e) => ({
