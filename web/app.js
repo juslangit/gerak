@@ -2301,3 +2301,166 @@ api(`/api/capabilities?t=${encodeURIComponent(TOKEN)}`).then((caps) => {
     `Blender was not found at ${caps.blenderPath}, so only .glb can be written. `
     + 'Set GERAK_BLENDER to where it is installed.';
 }).catch(() => {});
+
+
+/* ── what the assistant may do here ──────────────────────────────────
+ *
+ * bengkel injects a floating assistant into every tool it hosts. It cannot
+ * write code or touch anything on its own: it may only call the actions
+ * listed here, which are things this tool already does. `snapshot` and
+ * `restore` are what make them undoable, and `risky: true` marks the ones
+ * that reach outside the tool, which bengkel always asks about first.
+ *
+ * None of this happens when the tool is run on its own.
+ */
+if (window.bengkel && window.bengkel.assist) window.bengkel.assist({
+  tool: 'gerak',
+  about: 'poses a character by hand on a keyframe timeline. A character can '
+       + 'hold many animations; one is open at a time, and Update the game '
+       + 'writes the edited ones back into the game\'s own .glb.',
+
+  context: () => ({
+    character: state.model && state.model.name,
+    game: state.game && state.game.here && state.game.here.game,
+    animations: state.set.entries.map((e, i) => ({
+      name: e.name,
+      open: i === state.set.at,
+      frames: e.clip ? e.clip.frames : null,
+      keys: e.clip ? e.clip.totalKeys() : null,
+      edited_not_in_game: !!e.dirty,
+      used_by_game: state.usage && state.usage.counts
+        ? (state.usage.counts[e.from] || 0) : null,
+    })),
+    open_animation: state.clip && {
+      name: state.clip.name,
+      frames: state.clip.frames,
+      fps: state.clip.fps,
+      at_frame: state.frame,
+      keys_past_the_end: state.clip.keysPastEnd(),
+    },
+    selected_joint: view.selected && view.selected.name,
+    joints: state.bones.map((b) => b.name),
+  }),
+
+  /* gerak already photographs itself before every action it can undo, so the
+   * assistant borrows that rather than inventing a second history. One push
+   * per action, one undo per undo, so the two stacks stay in step. */
+  snapshot: () => { history.push('what the assistant did'); return true; },
+  restore: () => { undo(); },
+
+  actions: {
+    openCharacter: {
+      what: 'Open a character by name. This starts a fresh undo history',
+      args: { name: 'part of the file name, e.g. "footballer"' },
+      run: async ({ name }) => {
+        const want = String(name || '').toLowerCase();
+        const item = state.library.find((i) => i.rigged && i.name.toLowerCase().includes(want))
+          || state.library.find((i) => i.name.toLowerCase().includes(want));
+        if (!item) throw new Error(`no model here whose name has "${name}" in it`);
+        await openModel(item);
+        return item.name;
+      },
+    },
+    openAnimation: {
+      what: 'Put one of this character\'s animations on the timeline',
+      args: { name: 'the animation\'s name, exactly as listed' },
+      run: async ({ name }) => {
+        const at = state.set.indexOf(name);
+        if (at < 0) throw new Error(`this character has no animation called "${name}"`);
+        openAnim(at, { keepHistory: true });
+        return name;
+      },
+    },
+    setLength: {
+      what: 'Set how long the open animation is. Shortening it cuts what the '
+          + 'game gets, without deleting the keys past the end',
+      args: { frames: 'a whole number of frames' },
+      run: async ({ frames }) => {
+        const n = Math.max(1, Math.round(+frames));
+        state.clip.frames = n;
+        $('#length-field').value = n;
+        markDirty();
+        renderTracks();
+        setFrame(Math.min(state.frame, n));
+        const past = state.clip.keysPastEnd();
+        return `${n} frames${past ? `, ${past} keys now sit after the end` : ''}`;
+      },
+    },
+    goToFrame: {
+      what: 'Move the playhead to a frame',
+      args: { frame: 'a whole number' },
+      run: async ({ frame }) => {
+        setFrame(Math.max(0, Math.min(state.clip.frames, Math.round(+frame))));
+        return `frame ${state.frame}`;
+      },
+    },
+    keyPose: {
+      what: 'Set a key at the playhead, storing the pose the joints are in',
+      args: {},
+      run: async () => { keyPose(); return `keyed at frame ${state.frame}`; },
+    },
+    newAnimation: {
+      what: 'Start a new, empty animation on this character',
+      args: { name: 'what the game will call it' },
+      run: async ({ name }) => {
+        const at = state.set.add(String(name || 'new animation'));
+        state.set.entries[at].dirty = true;
+        openAnim(at, { keepHistory: true });
+        return state.set.entries[at].name;
+      },
+    },
+    mergeAnimations: {
+      what: 'Make two animations into one, keeping one motion and deleting '
+          + 'the other name',
+      args: { keep: 'the animation to keep', drop: 'the animation to delete' },
+      run: async ({ keep, drop }) => {
+        const a = state.set.indexOf(keep), b = state.set.indexOf(drop);
+        if (a < 0) throw new Error(`no animation called "${keep}"`);
+        if (b < 0) throw new Error(`no animation called "${drop}"`);
+        const done = state.set.merge(a, b, (source) =>
+          Clip.fromAnimationClip(source, state.bones, view.restPose,
+                                 +$('#fps-field').value || 24));
+        if (!done) throw new Error('that merge did nothing');
+        if (state.set.current) state.clip = state.set.current.clip;
+        setFrame(0); renderTracks(); renderAnims(); paintSaveState();
+        return `kept ${done.kept}, deleted ${done.dropped}`;
+      },
+    },
+    deleteAnimations: {
+      what: 'Delete one or more animations from this character. They leave '
+          + 'the game\'s file the next time it is updated',
+      args: { names: 'a list of animation names' },
+      run: async ({ names }) => {
+        const wanted = Array.isArray(names) ? names : [names];
+        const at = wanted.map((n) => state.set.indexOf(n));
+        const missing = wanted.filter((_, i) => at[i] < 0);
+        if (missing.length) throw new Error(`no animation called ${missing.join(', ')}`);
+        const done = state.set.remove(at);
+        if (done.lostOpen) openAnim(state.set.at, { stash: false, keepHistory: true });
+        renderAnims(); paintSaveState();
+        return done.names.join(', ');
+      },
+    },
+    save: {
+      what: 'Write the edited animations into your clips folder. Does not put '
+          + 'them in the game',
+      args: {},
+      run: async () => {
+        await $('#btn-save').onclick();
+        return 'saved';
+      },
+    },
+    updateGame: {
+      what: 'Write the edited animations back into the game\'s own file',
+      args: {},
+      risky: true,
+      warn: 'This writes into a game project\'s .glb. gerak will show you '
+          + 'exactly what it is about to write, and takes a backup first.',
+      run: async () => {
+        if ($('#btn-push').disabled) throw new Error('there is nothing to update');
+        await $('#btn-push').onclick();
+        return 'done';
+      },
+    },
+  },
+});
