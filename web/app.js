@@ -2072,7 +2072,7 @@ function command(name) {
 
 window.gerak = {
   state, view, player, api, command, openPath, native: NATIVE,
-  history, undo, redo, copyKeys, pasteKeys, insideSanggar: INSIDE_BENGKEL,
+  history, undo, redo, copyKeys, pasteKeys, insideBengkel: INSIDE_BENGKEL,
   mirrorOf: (name, names) => findMirror(name, names),
   get clipboard() { return clipboard; },
   openModel, keyPose, setFrame, renderTracks, loadLibrary, reference,
