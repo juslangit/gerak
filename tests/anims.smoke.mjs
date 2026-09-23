@@ -58,7 +58,8 @@ try {
 
   // ── a character with more than one animation in it ────────────────
   const many = g.state.library
-    .filter((i) => i.anims >= 3 && i.rigged && !i.path.includes('/exports/'))
+    .filter((i) => i.anims >= 3 && i.rigged
+      && !i.path.includes('/exports/') && !i.path.includes('/backups/'))
     .sort((a, b) => b.anims - a.anims)[0];
   if (!many) throw new Error('no model on this Mac has three animations in it');
 
@@ -80,8 +81,13 @@ try {
   say(g.state.clip.totalKeys() > 0,
     `it came in as ${g.state.clip.totalKeys()} editable keys on `
     + `${g.state.clip.tracks.size} joints`);
-  say(g.state.set.entries.filter((e) => e.clip).length === 1,
-    'and the other animations have not been read out of the file yet');
+  /* Lazily, except for any saved edits put back from the clips folder —
+   * those had to be read to be put back, and are marked as work the game's
+   * file does not have yet. */
+  const lazy = g.state.set.entries.filter((e, i) => i !== g.state.set.at && !e.dirty);
+  say(lazy.length > 0 && lazy.every((e) => !e.clip),
+    `the ${lazy.length} animations that are neither open nor restored have not `
+    + 'been read out of the file yet');
 
   // ── edit one, switch away, come back ──────────────────────────────
   const first = g.state.set.current.name;
@@ -117,6 +123,24 @@ try {
       'and it is live, because something has been edited');
   } else {
     say(true, 'this character is not in a game project, so the button will ask which one');
+  }
+
+  // ── the three bugs of 2026-09-23 ──────────────────────────────────
+  //
+  // He edited a few keyframes, pressed Save, pressed Update the game — and
+  // nothing was written. Then reopening the character showed the original.
+
+  // (a) merely switching animations must not count as an edit
+  {
+    const before = g.state.set.entries.filter((e) => e.dirty).length;
+    g.openAnim(4); await wait(150);
+    g.openAnim(5); await wait(150);
+    g.openAnim(0); await wait(150);
+    const after = g.state.set.entries.filter((e) => e.dirty).length;
+    say(after === before,
+      `clicking through animations marked ${after - before} of them as edited`);
+    say(g.state.set.unsavedEntries().every((e) => e.name === first),
+      'and only the one actually edited is waiting to be saved');
   }
 
   // ── used or unused, beside the keys ───────────────────────────────
@@ -251,7 +275,27 @@ try {
         s, g.state.bones, g.view.restPose, 24));
     say(!!doomed, `merged "${doomed.dropped}" away, keeping "${doomed.kept}"`);
 
+    /* (b) Save must not disarm Update the game.
+     *
+     * Done here rather than on a real character, because Save writes into
+     * ~/Documents/gerak/clips and a suite must not put its own keyframes in
+     * with his work. The clips it leaves are named after the copy, and
+     * tests/run.sh deletes them. */
+    {
+      const pending = g.state.set.edited().map((e) => e.name).sort();
+      say(pending.length > 0, `${pending.length} animation(s) waiting for the game`);
+      await document.querySelector('#btn-save').onclick();
+      await until('the save', () => !g.state.set.unsavedEntries().length, 15000);
+
+      say(document.querySelector('#btn-save').textContent.trim() === 'Save',
+        'the Save dot goes once it is written to the clips folder');
+      say(g.state.set.edited().map((e) => e.name).sort().join() === pending.join(),
+        'but the game is STILL owed the same animations afterwards');
+      say(g.state.set.pending, 'so Update the game is still armed');
+    }
+
     const { clips, remove } = g.state.set.push();
+    say(clips.length > 0, `the push carries ${clips.length} edited animation(s) after a Save`);
     const result = await g.api('/api/push', {
       model: copy.path, clips, remove, game: '',
     });

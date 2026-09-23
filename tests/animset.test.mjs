@@ -197,6 +197,69 @@ test('a new animation is added to the file rather than replacing one', () => {
   assert(remove.length === 0, 'and nothing is deleted to make room for it');
 });
 
+// ── saving is not the same act as updating the game ──────────────────
+//
+// This is the sequence Luqman actually did on 2026-09-23: edit some
+// keyframes, press Save, then press Update the game. Save cleared the flag
+// the push reads, so the push wrote nothing — and because he had also
+// deleted four animations, it still reported success and still changed the
+// file. The edits were silently left behind.
+
+test('saving to the clips folder does not empty the push queue', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  const clip = set.open(7, make);
+  clip.setKey('hand', 6, new THREE.Quaternion(0, 0.5, 0, 0.866), new THREE.Vector3());
+  clip.dirty = true;
+  set.stash(clip);
+
+  assert(set.edited().length === 1, 'the game has not got it');
+  assert(set.unsavedEntries().length === 1, 'nor has the clips folder');
+
+  set.saved(set.unsavedEntries());              // press Save
+
+  assert(set.unsavedEntries().length === 0, 'the Save dot goes');
+  assert(set.edited().length === 1, 'but the game STILL has not got it');
+  assert(set.push().clips.length === 1, 'so Update the game still writes it');
+  assert(set.push().clips[0].name === 'run', set.push().clips[0].name);
+});
+
+test('saving, then deleting, then pushing writes the edit as well as the deletion', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  const clip = set.open(7, make);
+  clip.setKey('hand', 3, new THREE.Quaternion(), new THREE.Vector3());
+  clip.dirty = true;
+  set.stash(clip);
+  set.saved(set.unsavedEntries());
+  set.remove([0]);                              // and delete one
+
+  const { clips, remove } = set.push();
+  assert(clips.length === 1, `expected the edit to be pushed, got ${clips.length}`);
+  assert(remove.join() === 'argue', remove.join());
+});
+
+test('only a push settles what the game has', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  const clip = set.open(7, make);
+  clip.dirty = true;
+  set.stash(clip);
+  set.saved(set.unsavedEntries());
+  assert(set.pending, 'the game is still behind');
+  set.settled();
+  assert(!set.pending, 'and now it is not');
+  assert(!set.dirty, 'and nothing is unsaved either');
+});
+
+test('walking away is only risky while something is unsaved', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  const clip = set.open(7, make);
+  clip.dirty = true;
+  set.stash(clip);
+  assert(set.dirty, 'work would be lost');
+  set.saved(set.unsavedEntries());
+  assert(!set.dirty, 'it is on disk now, even though the game lacks it');
+  assert(set.pending, 'which the push button still says');
+});
+
 // ── deleting ─────────────────────────────────────────────────────────
 
 test('deleting takes the animation out and queues its name for the file', () => {

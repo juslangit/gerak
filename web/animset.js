@@ -45,7 +45,7 @@ export class AnimSet {
     for (const source of sourceClips || []) {
       const name = source.name || 'animation';
       set.sources.set(name, source);
-      set.entries.push({ name, from: name, clip: null, dirty: false });
+      set.entries.push({ name, from: name, clip: null, dirty: false, unsaved: false });
     }
     /* A model with no animation in it still gets one entry to work in, so
      * posing a bare model is the same act as editing an existing walk rather
@@ -62,10 +62,34 @@ export class AnimSet {
 
   names() { return this.entries.map((e) => e.name); }
 
-  /** The entries that have been edited and not yet written anywhere. */
+  /* Two different questions, and they were one flag until 2026-09-23.
+   *
+   *   dirty    this animation differs from what the game's .glb holds.
+   *            Only a push settles it.
+   *   unsaved  this animation has changed since it was last written to
+   *            ~/Documents/gerak/clips. Only Save settles it.
+   *
+   * They were the same flag, and Save cleared it — so pressing Save and then
+   * Update the game pushed nothing at all, because by then nothing looked
+   * edited. The deletions still went through, which made it worse: the push
+   * reported success, the file really did change, and the keyframes were
+   * silently left behind. Two destinations need two flags. */
+
+  /** Not in the game's file yet — what "Update the game" writes. */
   edited() { return this.entries.filter((e) => e.dirty && e.clip); }
 
-  get dirty() { return this.entries.some((e) => e.dirty) || this.removed.length > 0; }
+  /** Not in the clips folder yet — what "Save" writes. */
+  unsavedEntries() { return this.entries.filter((e) => e.unsaved && e.clip); }
+
+  /** Anything at all that would be lost by walking away. */
+  get dirty() {
+    return this.entries.some((e) => e.unsaved) || this.removed.length > 0;
+  }
+
+  /** Anything the game's own file does not have yet. */
+  get pending() {
+    return this.entries.some((e) => e.dirty) || this.removed.length > 0;
+  }
 
   /**
    * Make the keys for one entry, if they do not exist yet.
@@ -82,12 +106,13 @@ export class AnimSet {
     entry.clip.model = this.model;
     entry.clip.dirty = false;
     entry.dirty = false;
+    entry.unsaved = false;
     return entry.clip;
   }
 
   /** An empty animation named after the character, to work in. */
   blank() {
-    return { name: this.label || 'untitled', from: null, clip: null, dirty: false };
+    return { name: this.label || 'untitled', from: null, clip: null, dirty: false, unsaved: false };
   }
 
   /**
@@ -151,7 +176,7 @@ export class AnimSet {
     const wanted = name || 'new animation';
     let unique = wanted;
     for (let n = 2; taken.has(unique); n++) unique = `${wanted} ${n}`;
-    this.entries.push({ name: unique, from: null, clip: null, dirty: false });
+    this.entries.push({ name: unique, from: null, clip: null, dirty: false, unsaved: false });
     return this.entries.length - 1;
   }
 
@@ -161,7 +186,7 @@ export class AnimSet {
     if (!entry || !clip) return;
     entry.clip = clip;
     entry.name = clip.name || entry.name;
-    if (clip.dirty) entry.dirty = true;
+    if (clip.dirty) { entry.dirty = true; entry.unsaved = true; }
   }
 
   /** Pick one up. Hands back the clip; the caller puts it on screen. */
@@ -200,6 +225,7 @@ export class AnimSet {
     else if (this.at > dropIndex) this.at -= 1;
 
     keep.dirty = true;
+    keep.unsaved = true;
     return { kept: keep.name, dropped: drop.name };
   }
 
@@ -215,14 +241,27 @@ export class AnimSet {
     };
   }
 
-  /** Everything is now on the disk, so nothing is outstanding. */
+  /**
+   * The game's file now says what the panel says, so nothing is outstanding
+   * in either sense: the clip matches the file, and the file is the thing
+   * that gets reopened tomorrow.
+   */
   settled() {
     for (const entry of this.entries) {
       entry.dirty = false;
+      entry.unsaved = false;
       if (entry.clip) entry.clip.dirty = false;
       if (!entry.from) entry.from = entry.name;
     }
     this.removed = [];
+  }
+
+  /** Written to the clips folder. That does not put it in the game. */
+  saved(entries) {
+    for (const entry of entries) {
+      entry.unsaved = false;
+      if (entry.clip) entry.clip.dirty = false;
+    }
   }
 
   /* ── undo ──────────────────────────────────────────────────────────
@@ -242,6 +281,7 @@ export class AnimSet {
         name: e.name,
         from: e.from,
         dirty: e.dirty,
+        unsaved: e.unsaved,
         clip: e.clip ? e.clip.toJSON() : null,
       })),
     };
@@ -257,10 +297,11 @@ export class AnimSet {
       name: e.name,
       from: e.from,
       dirty: !!e.dirty,
+      unsaved: !!e.unsaved,
       clip: e.clip ? Clip.fromJSON(e.clip) : null,
     }));
     for (const entry of this.entries) {
-      if (entry.clip) entry.clip.dirty = entry.dirty;
+      if (entry.clip) entry.clip.dirty = entry.unsaved;
     }
     return this;
   }

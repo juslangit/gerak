@@ -581,6 +581,7 @@ async function openModel(item) {
      * which meant eleven of a character's twelve were unreachable without
      * opening the file again. */
     await whichGame(item.path);
+    const restored = await restoreSavedEdits(item);
     openAnim(0, { quiet: true });
     // Not awaited: it is a walk of the game's scripts, and the character
     // should be on screen and posable before it comes back. The tags appear
@@ -590,9 +591,15 @@ async function openModel(item) {
     remember('gerak.lastModel', item.path);
     document.title = `${item.name} — gerak`;
     const has = info.clips.length;
-    toast(has
-      ? `${item.name} is open — ${has} animation${has === 1 ? '' : 's'} in the Animations tab.`
-      : `${item.name} is open — click a joint to start.`);
+    if (restored.length) {
+      toast(`${item.name} is open, and ${restored.length} animation`
+        + `${restored.length === 1 ? ' has' : 's have'} saved edits the game does not have yet: `
+        + `${restored.join(', ')}. Press Update the game to put ${restored.length === 1 ? 'it' : 'them'} in.`);
+    } else {
+      toast(has
+        ? `${item.name} is open — ${has} animation${has === 1 ? '' : 's'} in the Animations tab.`
+        : `${item.name} is open — click a joint to start.`);
+    }
   } catch (err) {
     console.error(err);
     /* The list is built from a scan that may be up to an hour old, so a row
@@ -694,6 +701,45 @@ function usageTag(entry) {
   return count
     ? `<span class="tag tag-used" title="${escapeHTML(game)} asks for &quot;${escapeHTML(name)}&quot; in ${count} place${count === 1 ? '' : 's'}">used${count > 1 ? ` ×${count}` : ''}</span>`
     : `<span class="tag tag-unused" title="Nothing in ${escapeHTML(game)} names &quot;${escapeHTML(name)}&quot; — but a name built in code at runtime would not be found">unused</span>`;
+}
+
+/**
+ * Put back the edits you saved but had not yet put in the game.
+ *
+ * Without this, closing gerak and opening the character again showed the
+ * animations exactly as the .glb has them — so work that was saved, and was
+ * sitting safely in ~/Documents/gerak/clips the whole time, looked lost. It
+ * was the second half of the bug that made Save disarm the push: the edits
+ * went to a folder nothing ever read back.
+ *
+ * A saved clip is only put back when it is **newer than the model file**.
+ * The server decides that, because the page's library list can be an hour
+ * stale. So a clip saved and then pushed is ignored — the file already has
+ * it — and a clip saved and never pushed comes back, marked as something the
+ * game still lacks, which lights up Update the game.
+ */
+async function restoreSavedEdits(item) {
+  const back = [];
+  try {
+    const { items } = await api(`/api/clips?t=${encodeURIComponent(TOKEN)}`);
+    const mine = (items || []).filter((c) =>
+      c.model === item.path && c.anim && c.ahead);
+    for (const meta of mine) {
+      const at = state.set.indexOf(meta.anim);
+      if (at < 0) continue;                    // that animation is gone now
+      const doc = await api(
+        `/api/clip?t=${encodeURIComponent(TOKEN)}&slug=${encodeURIComponent(meta.slug)}`);
+      const entry = state.set.entries[at];
+      entry.clip = Clip.fromJSON(doc);
+      entry.clip.name = entry.name;
+      entry.clip.model = item.path;
+      entry.dirty = true;      // the game's file has not got this
+      entry.unsaved = false;   // but the clips folder has
+      back.push(entry.name);
+    }
+  } catch { /* nothing to put back, or the list would not load */ }
+  if (back.length) { renderAnims(); paintSaveState(); }
+  return back;
 }
 
 /** Ask the game which of this character's animations it actually plays. */
@@ -1397,7 +1443,10 @@ function removeKeyHere() {
 
 function markDirty() {
   state.clip.dirty = true;
-  if (state.set.current) state.set.current.dirty = true;
+  if (state.set.current) {
+    state.set.current.dirty = true;     // not in the game's file
+    state.set.current.unsaved = true;   // not in the clips folder either
+  }
   paintSaveState();
   renderAnims();
 }
@@ -1410,10 +1459,11 @@ function markDirty() {
  * the game will be playing the next time you run it. Both show a dot when
  * there is something outstanding. */
 function paintSaveState() {
+  const unsaved = state.set ? state.set.unsavedEntries().length : 0;
   const edited = state.set ? state.set.edited().length : 0;
   const removed = state.set ? state.set.removed.length : 0;
   const save = $('#btn-save');
-  save.textContent = edited ? `Save ${edited === 1 ? '' : edited + ' '}•` : 'Save';
+  save.textContent = unsaved ? `Save ${unsaved === 1 ? '' : unsaved + ' '}•` : 'Save';
   save.disabled = !state.model;
 
   const push = $('#btn-push');
@@ -1423,7 +1473,7 @@ function paintSaveState() {
     ? `Update ${state.game.here.game}` : 'Update the game';
   push.title = !state.model ? 'Open a character first'
     : !pushable ? 'Only a .glb can be updated in place — export this one first'
-    : !(edited || removed) ? 'Nothing has been edited yet'
+    : !(edited || removed) ? 'The game\'s file already has everything in this panel'
     : state.game.here
       ? `Put ${edited || 'no'} edited animation${edited === 1 ? '' : 's'} back into `
         + `${state.game.here.game}/${state.game.here.relative}`
@@ -1663,11 +1713,11 @@ $('#btn-mirror').onclick = () => {
  * an animation called run. */
 $('#btn-save').onclick = async () => {
   state.set.stash(state.clip);
-  const edited = state.set.edited();
+  const edited = state.set.unsavedEntries();
 
   if (!edited.length) {
-    toast(state.set.removed.length
-      ? 'The merge is not saved here — press Update the game to apply it.'
+    toast(state.set.pending
+      ? 'Everything is saved. Press Update the game to put it in the game.'
       : 'Nothing to save yet — no edits.');
     return;
   }
@@ -1688,13 +1738,19 @@ $('#btn-save').onclick = async () => {
     return;
   }
 
-  for (const entry of edited) { entry.dirty = false; entry.clip.dirty = false; }
+  /* Only the clips-folder flag. Saving is not the same act as updating the
+   * game, and clearing both here is exactly the bug that made Save disarm
+   * the push: edit, Save, Update the game, and nothing was written. */
+  state.set.saved(edited);
   state.clip.dirty = false;
   paintSaveState();
   renderAnims();
-  toast(saved.length === 1
-    ? `Saved "${saved[0]}".`
-    : `Saved ${saved.length} animations: ${saved.join(', ')}.`);
+  const stillPending = state.set.edited().length;
+  toast((saved.length === 1 ? `Saved "${saved[0]}".`
+                            : `Saved ${saved.length} animations: ${saved.join(', ')}.`)
+    + (stillPending && state.game && state.game.here
+        ? ` Press Update ${state.game.here.game} to put ${stillPending === 1 ? 'it' : 'them'} in the game.`
+        : ''));
   loadClips();
 
   // Saving a clip means this model is something you are working on, so it
@@ -2196,7 +2252,8 @@ window.gerak = {
   openModel, keyPose, setFrame, renderTracks, loadLibrary, reference,
   renderLimbs, setChainMode, togglePin, applyPins,
   placeSkeleton, showRigPanel, setFacing,
-  openAnim, renderAnims, mergeAnims, deleteAnims, loadUsage, sheet, showTab, whichGame,
+  openAnim, renderAnims, mergeAnims, deleteAnims, loadUsage, restoreSavedEdits,
+  sheet, showTab, whichGame,
 };
 
 // ── go ──────────────────────────────────────────────────────────────

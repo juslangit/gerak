@@ -83,6 +83,9 @@ find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'player.*' -delete 2>/dev
 find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'test-anims.glb' -delete 2>/dev/null
 # ...and the backups the push suite made of it
 find "$HOME/Documents/gerak/backups" -maxdepth 1 -name 'test-anims-*.glb' -delete 2>/dev/null
+# ...and the clips the suite saved. A test must never leave its own keyframes
+# sitting in with his work, which is why it only ever saves against the copy.
+find "$HOME/Documents/gerak/clips" -maxdepth 1 -name 'test-anims-*.json' -delete 2>/dev/null
 # and drop the cached library, or the next run is offered files that have gone
 rm -f "$HOME/Documents/gerak/.library.json" 2>/dev/null
 

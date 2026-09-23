@@ -139,12 +139,23 @@ def glb_summary(path):
 
 
 def scan_library():
-    """Walk the roots and describe every model file found."""
+    """Walk the roots and describe every model file found.
+
+    The backups folder is left out. "Update the game" copies a character
+    aside before it writes, so every push would otherwise add another entry
+    to the library - the same character, under the same name, at a date -
+    and the list would slowly fill with gerak's own safety copies. They are
+    there to be restored from, not animated.
+    """
     out = []
+    skip_paths = {os.path.realpath(BACKUPS)}
     for root in ROOTS:
         if not os.path.isdir(root):
             continue
         for dirpath, dirnames, filenames in os.walk(root):
+            if os.path.realpath(dirpath) in skip_paths:
+                dirnames[:] = []
+                continue
             dirnames[:] = [d for d in dirnames
                            if d not in SKIP_DIRS and not d.startswith(".")]
             for name in filenames:
@@ -263,15 +274,31 @@ def list_clips():
                 doc = json.load(f)
         except Exception:
             continue
+        # Is this clip newer than the model it was made on?
+        #
+        # That is how gerak knows, when a character is reopened, whether a
+        # saved clip is work the game's file has not caught up with or an old
+        # copy of something already pushed. Comparing here rather than in the
+        # page because the page's library list can be an hour stale, and this
+        # decides whether an edit reappears or is quietly ignored.
+        model = doc.get("model", "")
+        try:
+            model_at = os.path.getmtime(model) if model else 0
+        except OSError:
+            model_at = 0
+        clip_at = os.path.getmtime(full)
+
         out.append({
             "slug": name[:-5],
             "name": doc.get("name", name[:-5]),
-            "model": doc.get("model", ""),
-            "modelName": os.path.basename(doc.get("model", "")),
+            "model": model,
+            "modelName": os.path.basename(model),
+            "anim": doc.get("anim", ""),
             "fps": doc.get("fps", 24),
             "frames": doc.get("frames", 0),
             "keys": sum(len(v) for v in doc.get("tracks", {}).values()),
-            "mtime": os.path.getmtime(full),
+            "mtime": clip_at,
+            "ahead": bool(model_at) and clip_at > model_at,
         })
     out.sort(key=lambda c: -c["mtime"])
     return out

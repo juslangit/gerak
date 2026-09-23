@@ -38,6 +38,15 @@ export class Reference {
     this.clipName = clipName;
     this.onChange = onChange || (() => {});
 
+    /* Putting a saved reference back on screen is not an edit.
+     *
+     * `fromJSON` unpins whatever was there and pins the clip's own picture,
+     * and both of those used to report a change — so merely switching from
+     * one animation to another marked it as edited. That made the Save dot
+     * and the push queue lie: on 2026-09-23 Luqman clicked through a
+     * character's animations, edited a few, and fourteen were written. */
+    this.restoring = false;
+
     this.results = [];
     this.kind = 'motion';
     this.pin = null;          // { path, frames[], count, title, credit, licence }
@@ -216,7 +225,7 @@ export class Reference {
 
     this.showFrame(0);
     this.toggle(false);
-    this.onChange();
+    this._changed();
     this.say(many ? `${pin.title} — ${pin.count} frames` : pin.title);
   }
 
@@ -267,10 +276,16 @@ export class Reference {
   }
 
   unpin() {
+    const had = !!this.pin;
     this.stopFlip();
     this.pin = null;
     this.box.hidden = true;
-    this.onChange();
+    if (had) this._changed();
+  }
+
+  /** Report a change, unless we are only putting a saved one back. */
+  _changed() {
+    if (!this.restoring) this.onChange();
   }
 
   /* Dragging the picture around, and sizing it from its corner. Both in plain
@@ -313,7 +328,7 @@ export class Reference {
         this.box.style.width = `${Math.min(wide, stage.width - this.box.offsetLeft)}px`;
       }
     };
-    const up = () => { if (from) { from = null; this.onChange(); } };
+    const up = () => { if (from) { from = null; this._changed(); } };
 
     bar.addEventListener('pointermove', move);
     grip.addEventListener('pointermove', move);
@@ -343,6 +358,15 @@ export class Reference {
   /** Put back what was saved. A missing file is said out loud rather than
    *  leaving an empty box that looks like a bug. */
   async fromJSON(doc) {
+    this.restoring = true;
+    try {
+      await this._restore(doc);
+    } finally {
+      this.restoring = false;
+    }
+  }
+
+  async _restore(doc) {
     this.unpin();
     if (!doc || !doc.path) return;
     this.usePin(doc);

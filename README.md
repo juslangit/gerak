@@ -204,6 +204,25 @@ break the moment `backpedal` stops existing, and that is the one thing about
 this that is easy to get wrong. Undo puts a merge back, and nothing has
 reached the disk until you update the game.
 
+### Save and Update the game are two different places
+
+This trips people up, so it is worth saying plainly:
+
+| Button | Where it writes | What clears its dot |
+|---|---|---|
+| **Save** | `~/Documents/gerak/clips`, as readable JSON | Save |
+| **Update the game** | the game's own `.glb` | Update the game |
+
+Pressing Save does **not** put anything in the game, and it no longer stops
+Update the game from working — for one day in September it did, silently, and
+a push after a save wrote nothing at all.
+
+If you save some edits and close gerak without updating the game, they are not
+lost. Opening that character again puts them back and lights up Update the
+game, because gerak looks in the clips folder for anything newer than the
+model file. A clip saved *before* the last push cannot be told apart by its
+date, so that one stays where it is — open it from the **Clips** tab.
+
 ## Update the game
 
 The green button in the top bar. It takes the animations you edited and puts
