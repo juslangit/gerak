@@ -136,10 +136,21 @@ try {
       near(mid, at0) < near(at0, at16) && near(mid, at16) < near(at0, at16),
     'frame 8 sits between the two keyed poses, not on either');
 
-  // ── a joint nobody touched has not moved ──────────────────────────
+  /* A joint nobody touched has not moved.
+   *
+   * Compared number by number rather than through the dot product, and this
+   * is not fussiness. A quaternion in a downloaded .glb is often not quite
+   * unit length — footballer_animated.glb stores LeftFoot's with a squared
+   * norm of 0.99999994 — so `1 - |a.dot(b)|` is 5e-8 for two quaternions
+   * that are bit-for-bit identical, and a tight tolerance on it fails on a
+   * joint that never moved at all. */
+  const same = (a, b, eps = 1e-9) =>
+    Math.abs(a.x - b.x) < eps && Math.abs(a.y - b.y) < eps
+    && Math.abs(a.z - b.z) < eps && Math.abs(a.w - b.w) < eps;
+
   const untouched = g.state.bones.find((b) => b !== arm && !g.state.clip.tracks.has(b.name));
   const rest = g.view.restPose.get(untouched.name);
-  say(1 - Math.abs(untouched.quaternion.dot(rest.q)) < 1e-9,
+  say(same(untouched.quaternion, rest.q),
     `"${untouched.name}", which was never posed, is exactly where the file put it`);
 
   // ── play ──────────────────────────────────────────────────────────
@@ -330,7 +341,7 @@ try {
 
   const sourcePose = g.state.clip.sample(poseHere[0].name, 0);
   const pastedPose = g.state.clip.sample(poseHere[0].name, 44);
-  say(1 - Math.abs(sourcePose.q.dot(pastedPose.q)) < 1e-9,
+  say(same(sourcePose.q, pastedPose.q),
     'and frame 44 now holds exactly the pose that was at frame 0');
 
   // Undo has to reach a paste like anything else.

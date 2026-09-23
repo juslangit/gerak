@@ -88,6 +88,28 @@ export class AnimSet {
     return entry.clip;
   }
 
+  /**
+   * Start a new animation on this character, from an empty timeline.
+   *
+   * This exists because the set took something away. gerak used to open a
+   * model with an empty clip and *offer* to load one of the file's
+   * animations; now it opens the first one straight away, which is what
+   * "change the animation whenever I want" asks for — but that left no way
+   * to pose a character that already has animations from scratch. This is
+   * the way back to one.
+   *
+   * It has no `from`, so nothing in the file is replaced when it is pushed:
+   * it is added to the game's .glb as a new animation under its own name.
+   */
+  add(name) {
+    const taken = new Set(this.names());
+    const wanted = name || 'new animation';
+    let unique = wanted;
+    for (let n = 2; taken.has(unique); n++) unique = `${wanted} ${n}`;
+    this.entries.push({ name: unique, from: null, clip: null, dirty: false });
+    return this.entries.length - 1;
+  }
+
   /** Put the open clip down — it keeps whatever state it is in. */
   stash(clip) {
     const entry = this.current;

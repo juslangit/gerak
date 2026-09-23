@@ -623,8 +623,10 @@ function renderAnims() {
     where.textContent = 'Open a character to see its animations.';
     list.innerHTML = '';
     $('#btn-merge').disabled = true;
+    $('#btn-new-anim').disabled = true;
     return;
   }
+  $('#btn-new-anim').disabled = false;
 
   const set = state.set;
   where.innerHTML = `<strong>${escapeHTML(state.model.name)}</strong> — `
@@ -799,6 +801,19 @@ async function whichGame(path) {
 }
 
 $('#btn-merge').onclick = mergeAnims;
+
+$('#btn-new-anim').onclick = () => {
+  if (!state.model) return;
+  const name = prompt('What is this animation called?\n\nThe game will play it '
+                      + 'by this name, so spell it the way the game expects.',
+                      'new animation');
+  if (!name) return;
+  history.push(`adding "${name}"`);
+  const at = state.set.add(name.trim());
+  state.set.entries[at].dirty = true;      // so Save and Update the game see it
+  openAnim(at);
+  toast(`"${state.set.entries[at].name}" is an empty timeline — pose it and key it.`);
+};
 
 // ── the joint tree ──────────────────────────────────────────────────
 

@@ -167,6 +167,36 @@ test('a merge into itself does nothing', () => {
   assert(set.length === 2, 'both still there');
 });
 
+// ── a new animation from nothing ─────────────────────────────────────
+
+test('a new animation can be added to a character that already has twelve', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  const at = set.add('celebrate harder');
+  assert(set.length === 13, `expected 13, got ${set.length}`);
+  assert(set.entries[at].from === null, 'it is not in the file yet');
+  const clip = set.open(at, make);
+  assert(clip.isEmpty(), 'and it opens as an empty timeline');
+});
+
+test('a new animation does not take a name the character already uses', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  const at = set.add('run');
+  assert(set.entries[at].name === 'run 2', set.entries[at].name);
+  assert(set.names().filter((n) => n === 'run').length === 1, 'the real run is untouched');
+});
+
+test('a new animation is added to the file rather than replacing one', () => {
+  const set = AnimSet.fromModel(item, twelve);
+  const at = set.add('slide');
+  const clip = set.open(at, make);
+  clip.setKey('hip', 0, new THREE.Quaternion(), new THREE.Vector3());
+  set.entries[at].dirty = true;
+  set.stash(clip);
+  const { clips, remove } = set.push();
+  assert(clips.some((c) => c.name === 'slide'), 'it is in what gets pushed');
+  assert(remove.length === 0, 'and nothing is deleted to make room for it');
+});
+
 // ── undo ─────────────────────────────────────────────────────────────
 
 test('a photograph of the set shares nothing with it', () => {

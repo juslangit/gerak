@@ -136,6 +136,10 @@ Nothing is read out of the file until you open it — sampling fifty-three
 animations to look at one would make the character slow to open — so an
 animation says *not opened yet* until you touch it.
 
+**+ New** starts an animation this character does not have yet, from an empty
+timeline. It is added to the game's file under its own name rather than
+replacing anything, so spell the name the way the game will ask for it.
+
 Two things to know about what you get:
 
 - The keys are **sampled every frame** rather than copied as curves. The
