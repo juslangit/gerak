@@ -423,8 +423,20 @@ wrapper adds is everything that makes a program an application.
 
 There is no Xcode project. `swiftc` comes with the command line tools, and an
 app bundle is a folder with an `Info.plist` in it, so `native/build.sh`
-assembles one in about ten seconds. It is signed ad-hoc, which is all an app
-that never leaves this machine needs.
+assembles one in about ten seconds.
+
+It is signed with a certificate rather than ad-hoc, and that is not a detail.
+An ad-hoc signature identifies an app by the hash of its own bytes, so every
+rebuild is a different app as far as macOS is concerned — and every permission
+it was granted, including reading the Desktop, Documents and Downloads folders
+that your whole model library lives in, belongs to the old one. Rebuilding
+meant approving the same dialogs again, every time. Signed with a certificate
+the requirement names the bundle identifier instead, so the grant survives.
+
+The certificate is self-signed, lives only in this Mac's login keychain and is
+trusted by nothing except this Mac's own record of what gerak is. The build
+prints the requirement it produced; if it ever says `cdhash`, the dialogs are
+back.
 
 The log is at `~/Library/Logs/gerak.log`, and the app's own menu has a
 **Show the log** item.

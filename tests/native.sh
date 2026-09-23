@@ -209,6 +209,16 @@ if [ -d "$INSTALLED" ] && [ -f "$HANDOVER" ]; then
     sleep 1; waited=$((waited + 1))
   done
 
+  # A folder-permission dialog looks exactly like a hang from here: the read
+  # blocks until somebody clicks Allow, and nothing is logged either way. Say
+  # so, rather than leaving a bare timeout to be puzzled over.
+  if ! grep -qE "opened |could not open" "$LOG" 2>/dev/null; then
+    echo "  --   the page never answered after ${waited}s. If macOS is asking"
+    echo "       \"gerak would like to access files in your Desktop folder\","
+    echo "       click Allow once — the grant survives rebuilds now (the app is"
+    echo "       signed with a certificate, not ad-hoc) and this will then pass."
+  fi
+
   grep -q "Finder handed over" "$LOG"
   check $? "macOS hands the file to the app"
   grep -q "holding .* until the page is up" "$LOG"

@@ -37,17 +37,34 @@ enum Paths {
 
 /// One log, in one place, whether the app was opened from Finder or a
 /// terminal. When something goes wrong this is the first thing to read.
+///
+/// Two threads write here: the app itself, and the reader forwarding the
+/// Python server's stderr. The first version opened the file, seeked to the
+/// end and wrote, which is three steps that another thread can land in the
+/// middle of — both seek to the same offset and one line lands on top of the
+/// other. It cost an hour on 2026-09-23, when "opening 1 file(s) in the page"
+/// vanished from a log that plainly showed the file being opened, and the
+/// missing line was read as a hang.
+///
+/// So: one lock, and `O_APPEND`, which makes the kernel place each write at
+/// the end of the file as a single operation rather than trusting a seek.
+private let logLock = NSLock()
+
 func log(_ message: String) {
     let stamp = ISO8601DateFormatter().string(from: Date())
     let line = "[\(stamp)] \(message)\n"
-    FileHandle.standardError.write(line.data(using: .utf8)!)
-    if let handle = try? FileHandle(forWritingTo: Paths.logFile) {
-        handle.seekToEndOfFile()
-        handle.write(line.data(using: .utf8)!)
-        try? handle.close()
-    } else {
-        try? line.write(to: Paths.logFile, atomically: true, encoding: .utf8)
-    }
+    guard let data = line.data(using: .utf8) else { return }
+
+    logLock.lock()
+    defer { logLock.unlock() }
+
+    FileHandle.standardError.write(data)
+
+    let path = Paths.logFile.path
+    let fd = Darwin.open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+    guard fd >= 0 else { return }
+    _ = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+    Darwin.close(fd)
 }
 
 // ───────────────────────────────────────────────────────────────────
