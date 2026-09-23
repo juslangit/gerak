@@ -40,6 +40,8 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
+import gltf_anim
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, "web")
 BLENDER_DIR = os.path.join(HERE, "blender")
@@ -64,6 +66,11 @@ EXPORTS = os.path.join(DATA, "exports")
 REFS = os.path.join(DATA, "references")
 CACHE = os.path.join(DATA, ".library.json")
 JOBS = os.path.join(DATA, ".jobs")
+
+# Where a copy of a game asset goes before gerak writes over it. D-008 said
+# the original is never touched; "Update the game" is the exception Luqman
+# asked for, so the promise becomes this folder instead.
+BACKUPS = os.path.join(DATA, "backups")
 
 READY_MARK = "@@GERAK-READY@@"
 
@@ -271,6 +278,121 @@ def list_clips():
 
 
 # --------------------------------------------------------------------------
+# games: where an animation goes when it leaves gerak
+# --------------------------------------------------------------------------
+
+GAMES = os.path.join(HOME, "Desktop", "project", "game")
+
+# Where a character goes in a game that has not seen it before. Every one of
+# his Godot projects keeps its models under assets/, so this is a guess that
+# is right rather than a convention being imposed.
+ASSET_GUESSES = [
+    os.path.join("assets", "characters"),
+    os.path.join("assets", "models"),
+    "assets",
+]
+
+# The files a Godot project could be naming an animation in. A .gd script
+# plays one by name; a .tscn or a .tres can hold the name in an exported
+# property or an AnimationTree.
+SCRIPT_EXT = (".gd", ".tscn", ".tres", ".cs", ".json", ".cfg")
+
+
+def game_of(path):
+    """Which game project this file lives in, if it lives in one at all.
+
+    This is what decides whether the "Update the game" button is a
+    write-back or a "which game?" question. It answers by where the file
+    sits, not by anything recorded, so moving a model between projects needs
+    nothing to be told to gerak.
+    """
+    try:
+        real = os.path.realpath(path)
+        root = os.path.realpath(GAMES)
+    except OSError:
+        return None
+    if not real.startswith(root + os.sep):
+        return None
+    name = real[len(root) + 1:].split(os.sep)[0]
+    folder = os.path.join(root, name)
+    if not os.path.isdir(folder):
+        return None
+    return {
+        "game": name,
+        "root": folder,
+        "shownRoot": folder.replace(HOME, "~"),
+        "relative": os.path.relpath(real, folder),
+        "godot": os.path.exists(os.path.join(folder, "project.godot")),
+    }
+
+
+def list_games():
+    """Every game project on the Mac, with the folder a character goes in."""
+    out = []
+    if not os.path.isdir(GAMES):
+        return out
+    for name in sorted(os.listdir(GAMES)):
+        folder = os.path.join(GAMES, name)
+        if name.startswith(".") or not os.path.isdir(folder):
+            continue
+        assets = next((g for g in ASSET_GUESSES
+                       if os.path.isdir(os.path.join(folder, g))), None)
+        out.append({
+            "game": name,
+            "root": folder,
+            "assets": os.path.join(folder, assets) if assets else None,
+            "shownAssets": (os.path.join(folder, assets).replace(HOME, "~")
+                            if assets else None),
+            "godot": os.path.exists(os.path.join(folder, "project.godot")),
+        })
+    return out
+
+
+def mentions(root, names, cap=40):
+    """Find where a game's own files say an animation's name out loud.
+
+    This is the warning in front of a merge. Deleting "run2" from a .glb is
+    harmless right up until a line of GDScript asks the AnimationPlayer to
+    play it, and then it is a runtime error in a game that was working an
+    hour ago. Names are looked for in quotes - Godot writes play("run2") and
+    &"run2" - because a bare word like "run" appears in a hundred places
+    that have nothing to do with an animation.
+    """
+    wanted = [n for n in names if n]
+    if not wanted or not os.path.isdir(root):
+        return {}
+
+    patterns = {n: re.compile(r"""["'&]%s["']""" % re.escape(n)) for n in wanted}
+    found = {n: [] for n in wanted}
+    total = 0
+
+    for here, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        for file in files:
+            if not file.endswith(SCRIPT_EXT):
+                continue
+            full = os.path.join(here, file)
+            try:
+                with open(full, "r", errors="replace") as f:
+                    lines = f.readlines()
+            except OSError:
+                continue
+            for i, line in enumerate(lines, 1):
+                for name, pattern in patterns.items():
+                    if pattern.search(line):
+                        found[name].append({
+                            "file": os.path.relpath(full, root),
+                            "line": i,
+                            "text": line.strip()[:160],
+                        })
+                        total += 1
+            if total >= cap:
+                return {k: v for k, v in found.items() if v}
+
+    return {k: v for k, v in found.items() if v}
+
+
+# --------------------------------------------------------------------------
 # Blender, for the formats a browser cannot write
 # --------------------------------------------------------------------------
 
@@ -462,6 +584,18 @@ class Handler(BaseHTTPRequestHandler):
             refresh = (query.get("refresh") or ["0"])[0] == "1"
             return self.send_json({"items": get_library(refresh)})
 
+        if path == "/api/games":
+            # Two answers in one: which game the open model belongs to, and
+            # which games there are to send it to if it belongs to none.
+            target = unquote((query.get("path") or [""])[0])
+            here = game_of(target) if target else None
+            return self.send_json({
+                "here": here,
+                "games": list_games(),
+                "pushable": bool(target and target.lower().endswith(".glb")),
+                "backups": BACKUPS.replace(HOME, "~"),
+            })
+
         if path == "/api/model":
             target = unquote((query.get("path") or [""])[0])
             if not allowed(target):
@@ -642,6 +776,83 @@ class Handler(BaseHTTPRequestHandler):
                 item["shown"] = item["path"].replace(HOME, "~")
             return self.send_json(result)
 
+        if path == "/api/mentions":
+            # Which of the game's own files name these animations. The merge
+            # dialog asks this before it offers to delete one.
+            model = body.get("model") or ""
+            if not allowed(model):
+                return self.send_json({"error": "outside the allowed folders"}, 403)
+            where = game_of(model)
+            if not where:
+                return self.send_json({"game": None, "hits": {}})
+            return self.send_json({
+                "game": where["game"],
+                "hits": mentions(where["root"], body.get("names") or []),
+            })
+
+        if path == "/api/push":
+            # Put the edited animations back into the file the game loads.
+            #
+            # This is the one place gerak writes over something it did not
+            # make, so it is also the one place that takes a copy first. The
+            # animations nobody edited are not rewritten at all - they keep
+            # the curves the original file had, down to the interpolation.
+            model = body.get("model") or ""
+            if not allowed(model):
+                return self.send_json({"error": "outside the allowed folders"}, 403)
+
+            clips = body.get("clips") or []
+            remove = [n for n in (body.get("remove") or []) if n]
+            if not clips and not remove:
+                return self.send_json({"error": "nothing has been edited yet"}, 400)
+
+            # Either write back into the file it came from, or - when it came
+            # from somewhere that is not a game - put a copy into the game
+            # that was chosen and update that instead.
+            into = body.get("game") or ""
+            if into:
+                chosen = next((g for g in list_games() if g["game"] == into), None)
+                if not chosen:
+                    return self.send_json({"error": "no game called %r" % into}, 400)
+                folder = chosen["assets"] or os.path.join(
+                    chosen["root"], "assets", "characters")
+                os.makedirs(folder, exist_ok=True)
+                target = os.path.join(folder, os.path.basename(model))
+                fresh = not os.path.exists(target)
+                if fresh:
+                    shutil.copy2(os.path.realpath(model), target)
+            else:
+                target = os.path.realpath(model)
+                fresh = False
+
+            if not target.lower().endswith(".glb"):
+                return self.send_json({
+                    "error": "only a .glb can be updated in place. Export this "
+                             "one and put the .glb in the game first."}, 400)
+
+            try:
+                result = gltf_anim.push(
+                    target, clips, remove=remove,
+                    backup_into=None if fresh else BACKUPS)
+            except gltf_anim.GlbError as err:
+                return self.send_json({"error": str(err)}, 400)
+            except Exception as err:                       # pragma: no cover
+                log("push failed:", repr(err))
+                return self.send_json({"error": "could not write it: %s" % err}, 500)
+
+            where = game_of(target)
+            result["game"] = where["game"] if where else None
+            result["godot"] = bool(where and where["godot"])
+            result["copied"] = fresh
+            result["shown"] = target.replace(HOME, "~")
+            if result.get("backup"):
+                result["shownBackup"] = result["backup"].replace(HOME, "~")
+            log("pushed", ", ".join(result["replaced"] + result["added"]) or "nothing",
+                "into", os.path.basename(target),
+                "(%d → %d KB)" % (result["bytes_before"] // 1024,
+                                  result["bytes_after"] // 1024))
+            return self.send_json(result)
+
         if path == "/api/clip/delete":
             full = clip_path(body.get("slug") or "")
             if os.path.exists(full):
@@ -703,8 +914,13 @@ class Handler(BaseHTTPRequestHandler):
             # Open a finished export in Finder, so the file is where you can
             # see it rather than only named in a message.
             target = body.get("path") or EXPORTS
-            if os.path.realpath(target).startswith(os.path.realpath(HERE)):
-                os.system("open -R %s" % json.dumps(target))
+            real = os.path.realpath(target)
+            # Your own work in ~/Documents/gerak, or a model gerak is
+            # entitled to read anyway. The check named HERE alone until the
+            # data folder moved out of the repo in D-011, after which it
+            # could not reveal a single thing it had written.
+            if real.startswith(os.path.realpath(DATA)) or allowed(real):
+                subprocess.run(["open", "-R", real], check=False)
                 return self.send_json({"ok": True})
             return self.send_json({"error": "no"}, 403)
 
@@ -772,7 +988,7 @@ def watch_parent():
 
 
 def main():
-    for folder in (DATA, CLIPS, EXPORTS, JOBS, REFS):
+    for folder in (DATA, CLIPS, EXPORTS, JOBS, REFS, BACKUPS):
         os.makedirs(folder, exist_ok=True)
     migrate_old_data()
 

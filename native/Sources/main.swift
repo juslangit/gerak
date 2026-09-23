@@ -382,14 +382,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate,
         guard ready else { return .terminateNow }
         // A run that is photographing itself has nobody to answer a dialog.
         guard shotPath == nil else { return .terminateNow }
-        web.evaluateJavaScript("!!(window.gerak && window.gerak.state.clip.dirty)") { result, _ in
+        // The whole animation set, not only the clip on screen: a character
+        // can have eleven other animations with edits waiting in them.
+        web.evaluateJavaScript("!!(window.gerak && window.gerak.state.set && window.gerak.state.set.dirty)") { result, _ in
             let dirty = (result as? Bool) ?? false
             guard dirty else {
                 NSApp.reply(toApplicationShouldTerminate: true)
                 return
             }
             let alert = NSAlert()
-            alert.messageText = "This clip has unsaved changes."
+            alert.messageText = "Some animations have unsaved edits."
             alert.informativeText = "Quit anyway and the keys you have set will be lost."
             alert.addButton(withTitle: "Save…")
             alert.addButton(withTitle: "Quit without saving")
@@ -485,7 +487,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate,
         file.addItem(withTitle: "Open Model…", action: #selector(openDocument(_:)), keyEquivalent: "o")
         file.addItem(cmd: "rescan", title: "Scan the Mac Again", key: "r", target: self)
         file.addItem(.separator())
-        file.addItem(cmd: "save", title: "Save Clip…", key: "s", target: self)
+        file.addItem(cmd: "save", title: "Save the Edited Animations", key: "s", target: self)
+        file.addItem(cmd: "push", title: "Update the Game", key: "u", target: self)
         file.addItem(cmd: "export", title: "Export…", key: "e", target: self)
         main.addItem(submenu: file, title: "File")
 
@@ -528,6 +531,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate,
         main.addItem(submenu: pose, title: "Pose")
 
         // Play
+        // ── Animation: moving between the ones this character has ──────
+        let anim = NSMenu(title: "Animation")
+        anim.addItem(cmd: "animations", title: "Show the Animations", key: "l", target: self)
+        anim.addItem(.separator())
+        anim.addItem(cmd: "nextAnim", title: "Next Animation", key: "\u{2193}",
+                     modifiers: [.command, .option], target: self)
+        anim.addItem(cmd: "prevAnim", title: "Previous Animation", key: "\u{2191}",
+                     modifiers: [.command, .option], target: self)
+        anim.addItem(.separator())
+        anim.addItem(cmd: "merge", title: "Merge Two Animations…", key: "", target: self)
+        main.addItem(submenu: anim, title: "Animation")
+
         let play = NSMenu(title: "Play")
         play.addItem(cmd: "play", title: "Play / Pause", key: " ", target: self)
         play.addItem(.separator())

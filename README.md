@@ -119,12 +119,84 @@ If some of the mesh was too far from every bone to be claimed, gerak says how
 many vertices that was. Those parts will not move; put a joint nearer and bind
 again.
 
-### If the model already has animations in it
+## Every animation a character has
 
-Most Meshy characters arrive with a walk and a run inside them. gerak offers to
-load one as ordinary keys, so you can edit someone else's walk instead of posing
-one from a T-pose. It samples every frame rather than copying the curves, so
-what you get is exactly what the file did.
+A rigged character is rarely one animation. `athlete_tall.glb` in
+referee-for-fun carries twelve — argue, backhand, celebrate, forehand, idle,
+lunge, ready, run, serve, smash, tired, walk — and Red Card's footballer
+carries fifty-three.
+
+Open the character and they are all in the **Animations** tab. Click one and
+it is on the timeline as ordinary keys, ready to be posed and re-keyed like
+anything else. Click another and you are editing that one instead. Your edits
+stay where you left them: a dot beside the name means that animation has
+changes that are not written down anywhere yet.
+
+Nothing is read out of the file until you open it — sampling fifty-three
+animations to look at one would make the character slow to open — so an
+animation says *not opened yet* until you touch it.
+
+Two things to know about what you get:
+
+- The keys are **sampled every frame** rather than copied as curves. The
+  incoming animation may be smooth in ways gerak's straight lines cannot
+  reproduce, so it copies the result instead of the recipe. What you see is
+  what the file did.
+- gerak turns and moves joints; it does not scale them. An animation that was
+  squashing a bone comes back without that part, and gerak says so when it
+  happens.
+
+### Merging two into one
+
+Sometimes a character has two animations that ought to be the same thing — two
+runs for two different occasions, say. Tick both in the Animations tab and
+press **Merge two…**.
+
+gerak asks which of the two motions you want to keep. The other is deleted:
+from the list straight away, and from the game's own file the next time you
+press Update the game. It is not a blend — an average of two runs is a third
+run nobody asked for.
+
+Before it deletes anything it looks through the game's own scripts and scenes
+for the name that is about to go, and shows you every line that says it out
+loud. A Godot script asking an `AnimationPlayer` for `play("backpedal")` will
+break the moment `backpedal` stops existing, and that is the one thing about
+this that is easy to get wrong. Undo puts a merge back, and nothing has
+reached the disk until you update the game.
+
+## Update the game
+
+The green button in the top bar. It takes the animations you edited and puts
+them back into the file the game actually loads, so the run you just fixed is
+the run the game plays.
+
+It only appears as live when the character you have open lives inside one of
+your game projects — gerak works that out from where the file sits, so nothing
+has to be told to it. A character from somewhere else asks which game it is
+for and puts a copy there.
+
+What it writes is deliberately narrow:
+
+- **Only the animations you edited are rewritten.** The others keep the exact
+  curves the original file had, down to their interpolation — they are not
+  round-tripped at all.
+- **Nothing else in the file is touched.** Not the mesh, not the skin, not the
+  materials, not the textures, not the node tree. The .glb's JSON is edited in
+  place rather than the file being rebuilt, and the test suite proves it
+  accessor by accessor after eleven rewrites.
+- **A copy goes to `~/Documents/gerak/backups` first**, every single time,
+  named with the date and the time.
+- The keys are **thinned** on the way in. gerak samples every frame while you
+  edit; a joint that holds still for a second does not need to go into a game
+  asset as twenty-four identical keys. The tolerance is about a ninth of a
+  degree, so the motion does not change — one athlete went from 1,509 keys to
+  314.
+
+Godot re-imports the file the next time you give the editor focus.
+
+This is the one place gerak writes over a file it did not make. Everywhere
+else it still refuses to: exports go to `~/Documents/gerak/exports` and the
+original is left alone.
 
 ## Reference pictures
 
@@ -194,8 +266,10 @@ so Commons never learns what you are animating.
 | `Esc` | Deselect |
 
 In the app the menu bar has all of these as well, with the usual Mac
-shortcuts: `⌘O` to open a model, `⌘S` to save a clip, `⌘E` to export, `⌘K` to
-key the pose, `⌘B` to bind a skin.
+shortcuts: `⌘O` to open a model, `⌘S` to save, `⌘U` to update the game, `⌘E`
+to export, `⌘K` to key the pose, `⌘B` to bind a skin. The **Animation** menu
+moves between a character's animations with `⌥⌘↑` and `⌥⌘↓`, and `⌘L` shows
+the list.
 
 ## Where things are
 
@@ -208,6 +282,8 @@ web/index.html     the page
 web/style.css      the look
 web/scene.js       the viewport — the model, the joint dots, the ring
 web/clip.js        the animation maths — keys, in-betweens, export, playback
+web/animset.js     every animation one character has, and merging two of them
+gltf_anim.py       writing animations back into a .glb without touching the rest
 web/ik.js          the IK solver, and finding the limbs on a skeleton
 web/templates.js   the ready-made skeletons, and fitting one to a model
 web/app.js         the wiring between all of those
@@ -219,6 +295,7 @@ Your own work lives outside the code, in `~/Documents/gerak/`:
 ```
 clips/             your saved animations, as plain readable JSON
 exports/           the files gerak writes for you
+backups/           what a game's file said before Update the game changed it
 ```
 
 A clip is a small JSON file you can open and read. It names the model it was
@@ -232,7 +309,7 @@ gerak --no-open                       # start it, note the token it prints
 GERAK_TOKEN=<the token> tests/run.sh
 ```
 
-Six suites, in order of how much each one proves:
+Eight suites, in order of how much each one proves:
 
 1. **The animation maths**, in Node, no browser needed. Is frame 9 really
    between the keys at 6 and 12? Does a joint you never touched stay exactly
@@ -251,6 +328,21 @@ Six suites, in order of how much each one proves:
    formats.
 6. **The rigging flow**, end to end: a model with no skeleton becomes a rigged,
    posed, keyed, IK-driven animation without anybody touching Blender.
+7. **The animation set**, in Node. Does an edit survive switching to another
+   animation and back? Does a merge delete exactly one of the two, and does
+   undo bring it back?
+8. **Writing into a .glb**, in Python, against a real character out of
+   referee-for-fun. This is the one that matters most, because it is the only
+   part of gerak that writes over a file it did not make: it reads the file
+   back off the disk and proves, accessor by accessor, that the mesh, the
+   skin, the materials and the untouched animations are the same bytes they
+   were — after eleven rewrites, with the file the same size each time.
+
+   There is a browser suite beside it that drives the panel, the merge dialog
+   and the push. It never writes into a game project: the file it pushes to is
+   a copy `tests/run.sh` puts in the exports folder first, so a run that fails
+   half way through cannot leave a character in referee-for-fun with an
+   animation missing.
 
 And the app has its own suite, which checks only what becoming an application
 added — the things that break at that boundary:

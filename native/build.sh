@@ -137,6 +137,7 @@ say "compiled: $(du -h "$CONTENTS/MacOS/gerak" | cut -f1)"
 # The app is self-contained: it runs the copy in its own Resources folder,
 # never the working tree, so moving or reinstalling it changes nothing.
 cp "$ROOT/server.py" "$CONTENTS/Resources/"
+cp "$ROOT/gltf_anim.py" "$CONTENTS/Resources/"
 cp "$ROOT/README.md" "$CONTENTS/Resources/"
 cp -R "$ROOT/web" "$CONTENTS/Resources/"
 cp -R "$ROOT/blender" "$CONTENTS/Resources/"

@@ -19,6 +19,8 @@ run() { echo; echo "── $1 ────────────────�
 
 run "the animation maths" node --import ./tests/register.mjs tests/clip.test.mjs
 run "the IK solver"       node --import ./tests/register.mjs tests/ik.test.mjs
+run "the animation set"   node --import ./tests/register.mjs tests/animset.test.mjs
+run "writing into a .glb" python3 tests/glb.test.py
 
 TOKEN="${GERAK_TOKEN:-}"
 PORT="${GERAK_PORT:-8778}"
@@ -59,11 +61,28 @@ run "the rigging flow, end to end" \
 run "reference pictures" \
   node tests/run-browser.mjs "$BASE/?t=$TOKEN" tests/reference.smoke.mjs
 
+# The animation-set suite pushes an edited animation back into a .glb, which
+# is the one thing gerak does that writes over a file it did not make. It is
+# given a copy to write over rather than a game asset: a suite that failed
+# half way through must not be able to leave a character in referee-for-fun
+# with an animation missing.
+COPY="$HOME/Documents/gerak/exports/test-anims.glb"
+WITH_ANIMS="${GERAK_TEST_ANIMS:-$HOME/Desktop/project/game/referee-for-fun/assets/characters/athlete_tall.glb}"
+if [ -f "$WITH_ANIMS" ]; then
+  cp "$WITH_ANIMS" "$COPY"
+fi
+run "a character's whole set of animations" \
+  node tests/run-browser.mjs "$BASE/?t=$TOKEN&copy=$(enc "$COPY")" tests/anims.smoke.mjs
+rm -f "$COPY"
+
 # The rigging suite writes rigged copies into the exports folder. They are
 # test output, not your work, so they do not get to sit in Documents.
 find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'test-*-rigged.glb' -delete 2>/dev/null
 find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'crowd_a_stand-rigged.*' -delete 2>/dev/null
 find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'player.*' -delete 2>/dev/null
+find "$HOME/Documents/gerak/exports" -maxdepth 1 -name 'test-anims.glb' -delete 2>/dev/null
+# ...and the backups the push suite made of it
+find "$HOME/Documents/gerak/backups" -maxdepth 1 -name 'test-anims-*.glb' -delete 2>/dev/null
 # and drop the cached library, or the next run is offered files that have gone
 rm -f "$HOME/Documents/gerak/.library.json" 2>/dev/null
 

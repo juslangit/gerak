@@ -165,8 +165,50 @@ const SHOTS_TO_TAKE = [
     `,
   },
   {
+    // The panel of everything one character can do, with one of them open on
+    // the timeline, one edited and two ticked ready to be merged.
+    name: '9-animations',
+    setup: `
+      const g = window.gerak;
+      const many = g.state.library
+        .filter(i => i.anims >= 6 && i.rigged && !i.path.includes('/exports/'))
+        .sort((a, b) => b.anims - a.anims)[0];
+      await g.openModel(many);
+      await new Promise(r => setTimeout(r, 600));
+      g.showTab('anims');
+      g.openAnim(Math.min(3, g.state.set.length - 1));
+      await new Promise(r => setTimeout(r, 400));
+      const joint = g.state.bones.find(b => /arm|hand|spine/i.test(b.name)) || g.state.bones[2];
+      g.view.select(joint);
+      g.setFrame(8);
+      joint.rotation.z += 0.45;
+      g.keyPose(8);
+      const ticks = [...document.querySelectorAll('.anim-pick')];
+      for (const i of [1, 2]) {
+        if (!ticks[i]) continue;
+        ticks[i].checked = true;
+        ticks[i].dispatchEvent(new Event('change'));
+      }
+      g.setFrame(8);
+    `,
+  },
+  {
+    // The question a merge asks, with the warning about what in the game is
+    // still calling the name that is about to go.
+    name: '10-merge',
+    setup: `
+      const g = window.gerak;
+      g.mergeAnims();
+      for (let i = 0; i < 100 && document.querySelector('#sheet').hidden; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+      await new Promise(r => setTimeout(r, 300));
+    `,
+  },
+  {
     name: '4-rigging',
     setup: `
+      document.querySelector('#sheet').hidden = true;
       const g = window.gerak;
       const bare = g.state.library.find(i => i.ext === 'glb' && !i.rigged && i.meshes > 0
         && /crowd_a_stand/.test(i.name))

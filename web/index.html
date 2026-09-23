@@ -24,7 +24,9 @@
   </div>
   <div class="loaded" id="loaded-name">nothing open</div>
   <div class="topbar-actions">
-    <button class="btn" id="btn-save" disabled>Save clip</button>
+    <button class="btn" id="btn-save" disabled>Save</button>
+    <button class="btn btn-game" id="btn-push" disabled
+            title="Put the animations you edited back into the game's own file">Update the game</button>
     <button class="btn btn-primary" id="btn-export" disabled>Export</button>
   </div>
 
@@ -50,6 +52,7 @@
   <aside class="panel panel-left">
     <div class="panel-tabs">
       <button class="tab is-on" data-tab="library">Models</button>
+      <button class="tab" data-tab="anims">Animations</button>
       <button class="tab" data-tab="clips">Clips</button>
     </div>
 
@@ -67,6 +70,20 @@
       <div class="source-row" id="source-row"></div>
       <div class="list" id="library-list">
         <p class="hint">Looking for models…</p>
+      </div>
+    </section>
+
+    <!-- Every animation this character has. One is open; the rest keep
+         whatever edits they have until you come back to them. -->
+    <section class="tab-body" data-body="anims">
+      <div class="anim-head">
+        <span id="anim-where">Open a character to see its animations.</span>
+      </div>
+      <div class="list anim-list" id="anim-list"></div>
+      <div class="anim-foot">
+        <button class="btn btn-small" id="btn-merge" disabled
+                title="Tick two animations to make them into one">Merge two…</button>
+        <span class="anim-note" id="anim-note"></span>
       </div>
     </section>
 
@@ -270,6 +287,18 @@
     <div class="playhead" id="playhead"></div>
   </div>
 </footer>
+
+<!-- Asking a question with more than a yes in it. The browser's own confirm()
+     becomes a real Mac sheet inside gerak.app, and a pending sheet stops every
+     other piece of JavaScript on the page dead — including the test driving it. -->
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <h3 id="sheet-title"></h3>
+    <div class="sheet-body" id="sheet-body"></div>
+    <div class="sheet-warn" id="sheet-warn" hidden></div>
+    <div class="sheet-actions" id="sheet-actions"></div>
+  </div>
+</div>
 
 <div class="toast" id="toast" hidden></div>
 <div class="drop-hint" id="drop-hint" hidden>Drop it to open</div>

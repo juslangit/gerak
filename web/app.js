@@ -14,6 +14,7 @@ import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/GLTFExporter.js';
 import { Viewport } from '/web/scene.js';
 import { Clip, Player } from '/web/clip.js';
+import { AnimSet } from '/web/animset.js';
 import { detectLimbs, chainFrom, findMirror } from '/web/ik.js';
 import { TEMPLATES, TEMPLATE_ORDER, fitTemplate, guessFacing, headsAndTails }
   from '/web/templates.js';
@@ -59,6 +60,8 @@ const modelURL = (path) =>
 const state = {
   library: [],
   clip: new Clip(),
+  set: new AnimSet(),   // every animation this character has; clip is the open one
+  game: null,           // the game project the open model lives in, if any
   model: null,          // the library row that is open
   bones: [],
   frame: 0,
@@ -86,6 +89,10 @@ const player = new Player((f) => setFrame(f, true));
 function photograph() {
   return {
     clip: state.clip.toJSON(),
+    // The whole animation set, not only the open clip. A merge deletes one
+    // animation and edits another, and an undo that put back the clip alone
+    // would leave the deleted one deleted.
+    set: state.set ? state.set.toJSON() : null,
     frame: state.frame,
     pose: state.bones.map((bone) => ({
       n: bone.name,
@@ -117,6 +124,11 @@ function putBack(shot) {
 
   state.clip = Clip.fromJSON(shot.clip);
   state.clip.dirty = true;
+  if (shot.set) state.set.restore(shot.set);
+  // The set's own copy of the open entry is the photograph's; the live clip
+  // is what is on screen. Point the entry at it so the two do not drift.
+  if (state.set.current) state.set.current.clip = state.clip;
+  renderAnims();
   $('#length-field').value = state.clip.frames;
   $('#fps-field').value = state.clip.fps;
 
@@ -332,6 +344,52 @@ function toast(msg, bad = false) {
 
 const kb = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
 
+/* Asking a question that has more than a yes in it.
+ *
+ * The browser's own confirm() only offers two answers, and inside gerak.app
+ * it is not a browser dialog at all — WKWebView turns it into a real Mac
+ * sheet, and a pending sheet blocks every other piece of JavaScript on the
+ * page, including whatever is waiting for the answer. Merging needs three
+ * answers and a warning list, so it gets a panel in the page instead.
+ *
+ * Resolves to the id of the button that was pressed, or null for cancel.
+ */
+function sheet({ title, body, warn = '', actions }) {
+  const el = $('#sheet');
+  $('#sheet-title').textContent = title;
+  $('#sheet-body').innerHTML = body;
+  $('#sheet-warn').innerHTML = warn;
+  $('#sheet-warn').hidden = !warn;
+
+  return new Promise((resolve) => {
+    const done = (value) => {
+      el.hidden = true;
+      document.removeEventListener('keydown', onKey, true);
+      resolve(value);
+    };
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      done(null);
+    };
+
+    const row = $('#sheet-actions');
+    row.innerHTML = '';
+    for (const action of actions) {
+      const btn = document.createElement('button');
+      btn.className = `btn${action.primary ? ' btn-primary' : ''}`;
+      btn.textContent = action.label;
+      btn.onclick = () => done(action.id);
+      row.appendChild(btn);
+    }
+
+    el.hidden = false;
+    document.addEventListener('keydown', onKey, true);
+    const first = row.querySelector('.btn-primary') || row.firstChild;
+    if (first) first.focus();
+  });
+}
+
 /* Meshy and Blender rigs use different spellings for the same bone. This makes
  * "LeftArm", "arm.L", "Bip01_L_UpperArm" and "hand_l" all readable at a glance
  * without losing which side they are on. */
@@ -473,7 +531,8 @@ function escapeHTML(s) {
 // ── opening a model ─────────────────────────────────────────────────
 
 async function openModel(item) {
-  if (state.clip.dirty && !confirm('This clip has unsaved changes. Open another model anyway?')) return;
+  if (state.set.dirty
+      && !confirm('Some animations have unsaved edits. Open another model anyway?')) return;
 
   toast(`Opening ${item.name}…`);
   player.pause();
@@ -483,6 +542,7 @@ async function openModel(item) {
     state.model = item;
     state.bones = info.bones;
     state.chains = [];
+    state.set = AnimSet.fromModel(item, info.clips);
     state.clip = new Clip({
       name: item.name.replace(/\.(glb|gltf|fbx)$/i, ''),
       model: item.path,
@@ -514,11 +574,20 @@ async function openModel(item) {
     renderLimbs();
     setFrame(0);
     renderTracks();
-    offerSourceClips(info.clips);
+
+    /* Whatever animations the file came with are now the panel, and the
+     * first of them is open. It used to be a prompt asking you to pick one,
+     * which meant eleven of a character's twelve were unreachable without
+     * opening the file again. */
+    await whichGame(item.path);
+    openAnim(0, { quiet: true });
 
     remember('gerak.lastModel', item.path);
     document.title = `${item.name} — gerak`;
-    toast(`${item.name} is open — click a joint to start.`);
+    const has = info.clips.length;
+    toast(has
+      ? `${item.name} is open — ${has} animation${has === 1 ? '' : 's'} in the Animations tab.`
+      : `${item.name} is open — click a joint to start.`);
   } catch (err) {
     console.error(err);
     /* The list is built from a scan that may be up to an hour old, so a row
@@ -533,45 +602,203 @@ async function openModel(item) {
   renderLibrary();
 }
 
-/* A Meshy model often arrives with a walk and a run already inside it. Rather
- * than ignore them, offer to turn one into editable keys - it is far quicker
- * to fix someone else's walk than to pose one from a T-pose. */
-function offerSourceClips(clips) {
-  if (!clips.length) return;
-  const names = clips.map((c) => c.name);
-  const pick = names.length === 1 ? names[0] : null;
-  const msg = pick
-    ? `This file already contains "${pick}". Load it as editable keys?`
-    : `This file contains ${names.length} animations. Load one as editable keys?\n\n` +
-      names.map((n, i) => `${i + 1}. ${n}`).join('\n') +
-      `\n\nType a number, or cancel.`;
+/* ── the animations this character has ───────────────────────────────
+ *
+ * A rigged character is rarely one animation. `athlete_tall.glb` carries
+ * twelve, and the game plays them by name, so "edit the animation" has to
+ * mean "edit any of the twelve, whenever you like" rather than "pick one on
+ * the way in and live with it".
+ *
+ * Everything here is in memory. Switching animations writes nothing; Save
+ * writes your clips into ~/Documents/gerak; Update the game writes into the
+ * game's own file. Three separate acts, three separate buttons.
+ */
 
-  setTimeout(() => {
-    let chosen = null;
-    if (pick) { if (confirm(msg)) chosen = clips[0]; }
-    else {
-      const answer = prompt(msg, '1');
-      const i = parseInt(answer, 10) - 1;
-      if (i >= 0 && i < clips.length) chosen = clips[i];
-    }
-    if (!chosen) return;
-    importSourceClip(chosen);
-  }, 400);
+function renderAnims() {
+  const list = $('#anim-list');
+  const where = $('#anim-where');
+  if (!list) return;
+
+  if (!state.model) {
+    where.textContent = 'Open a character to see its animations.';
+    list.innerHTML = '';
+    $('#btn-merge').disabled = true;
+    return;
+  }
+
+  const set = state.set;
+  where.innerHTML = `<strong>${escapeHTML(state.model.name)}</strong> — `
+    + `${set.length} animation${set.length === 1 ? '' : 's'}`
+    + (state.game && state.game.here
+       ? ` · in ${escapeHTML(state.game.here.game)}` : '');
+
+  list.innerHTML = set.entries.map((entry, i) => {
+    const clip = entry.clip;
+    const keys = clip ? clip.totalKeys() : null;
+    const frames = clip ? clip.frames
+      : (set.sources.get(entry.from) ? Math.round(set.sources.get(entry.from).duration * 24) : 0);
+    return `
+      <div class="row anim-row ${i === set.at ? 'is-open' : ''}" data-i="${i}">
+        <label class="anim-tick" title="Tick two to merge them">
+          <input type="checkbox" class="anim-pick" data-i="${i}">
+        </label>
+        <button class="anim-open" data-i="${i}">
+          <span class="row-name">${escapeHTML(entry.name)}${entry.dirty ? ' <span class="dot">•</span>' : ''}</span>
+          <span class="row-tags">
+            <span class="tag">${frames} frames</span>
+            ${keys === null ? '<span class="tag tag-quiet">not opened yet</span>'
+                            : `<span class="tag tag-rig">${keys} keys</span>`}
+          </span>
+        </button>
+      </div>`;
+  }).join('');
+
+  list.querySelectorAll('.anim-open').forEach((btn) => {
+    btn.onclick = () => openAnim(+btn.dataset.i);
+  });
+  list.querySelectorAll('.anim-pick').forEach((box) => {
+    box.onchange = paintMergeButton;
+  });
+  paintMergeButton();
 }
 
-function importSourceClip(source) {
-  history.push(`loading "${source.name}"`);
-  const fps = +$('#fps-field').value || 24;
-  const imported = Clip.fromAnimationClip(source, state.bones, view.restPose, fps);
-  imported.model = state.model.path;
-  imported.name = `${state.model.name.replace(/\.\w+$/, '')}-${source.name}`;
-  state.clip = imported;
-  $('#length-field').value = imported.frames;
+function pickedAnims() {
+  return [...document.querySelectorAll('.anim-pick')]
+    .filter((b) => b.checked).map((b) => +b.dataset.i);
+}
+
+function paintMergeButton() {
+  const picked = pickedAnims();
+  const btn = $('#btn-merge');
+  btn.disabled = picked.length !== 2;
+  $('#anim-note').textContent = picked.length === 2
+    ? `${state.set.entries[picked[0]].name} and ${state.set.entries[picked[1]].name}`
+    : picked.length ? 'Tick one more.' : '';
+}
+
+/**
+ * Put down the animation being edited and pick up another.
+ *
+ * The first time one is opened it is read out of the file and sampled into
+ * keys, which is why an animation says "not opened yet" until you touch it —
+ * doing that to all twelve on open would make every character slow to look
+ * at for the sake of eleven you were not going to edit.
+ */
+function openAnim(i, { quiet = false } = {}) {
+  const set = state.set;
+  if (i < 0 || i >= set.length) return;
+  if (i === set.at && set.current && set.current.clip === state.clip) return;
+
+  player.pause();
+  set.stash(state.clip);
+
+  const clip = set.open(i, (source) =>
+    Clip.fromAnimationClip(source, state.bones, view.restPose,
+                           +$('#fps-field').value || 24));
+  if (!clip) return;
+
+  state.clip = clip;
+  state.picked = [];
+  reference.fromJSON(clip.reference);
+  $('#fps-field').value = clip.fps;
+  $('#length-field').value = clip.frames;
+
+  /* An animation is a different piece of work from the one before it, so the
+   * undo stack starts again here. Undoing across a switch would put keys from
+   * one animation back into another. */
+  history.clear();
   setFrame(0);
   renderBoneTree();
   renderTracks();
-  toast(`Loaded "${source.name}" — ${imported.totalKeys()} keys on ${imported.tracks.size} joints. Edit any of them.`);
+  renderAnims();
+  paintSaveState();
+  if (!quiet) {
+    toast(`Editing "${clip.name}" — ${clip.totalKeys()} keys on ${clip.tracks.size} joints.`);
+  }
 }
+
+/**
+ * Merge two of them into one.
+ *
+ * His case: a character has two runs for two different occasions and he
+ * wants both occasions to look the same. So this is not a blend — it is
+ * choosing which of the two motions survives. The other is deleted, and
+ * because a Godot script plays an animation by its name, gerak looks through
+ * the game's own files first and shows every line that says the name out
+ * loud before it offers to go ahead.
+ */
+async function mergeAnims() {
+  const picked = pickedAnims();
+  if (picked.length !== 2) return;
+  const [a, b] = picked.map((i) => state.set.entries[i]);
+
+  const hits = await mentionsOf([a.name, b.name]);
+  const warnFor = (name) => {
+    const found = hits[name] || [];
+    if (!found.length) return '';
+    return `<p><strong>${escapeHTML(name)}</strong> is named in `
+      + `${found.length} place${found.length === 1 ? '' : 's'} in the game:</p>`
+      + '<ul>' + found.slice(0, 6).map((h) =>
+        `<li><code>${escapeHTML(h.file)}:${h.line}</code> ${escapeHTML(h.text)}</li>`).join('')
+      + '</ul>'
+      + (found.length > 6 ? `<p>…and ${found.length - 6} more.</p>` : '');
+  };
+
+  const answer = await sheet({
+    title: `Merge "${a.name}" and "${b.name}"`,
+    body: `<p>Both will become one animation. Which motion do you want to keep?
+           The other one is deleted — from the list now, and from the game's
+           file the next time you press Update&nbsp;the&nbsp;game.</p>`,
+    warn: warnFor(a.name) + warnFor(b.name),
+    actions: [
+      { id: 'a', label: `Keep "${a.name}"`, primary: true },
+      { id: 'b', label: `Keep "${b.name}"` },
+      { id: null, label: 'Cancel' },
+    ],
+  });
+  if (!answer) return;
+
+  const keep = answer === 'a' ? picked[0] : picked[1];
+  const drop = answer === 'a' ? picked[1] : picked[0];
+  const dropped = state.set.entries[drop].name;
+
+  history.push(`merging "${a.name}" and "${b.name}"`);
+  const done = state.set.merge(keep, drop, (source) =>
+    Clip.fromAnimationClip(source, state.bones, view.restPose,
+                           +$('#fps-field').value || 24));
+  if (!done) return;
+
+  // If the one that went was the one on screen, the keeper is now open.
+  if (state.set.current) state.clip = state.set.current.clip;
+  setFrame(0);
+  renderTracks();
+  renderAnims();
+  paintSaveState();
+  toast(`Kept "${done.kept}" and deleted "${dropped}". `
+        + 'Press Update the game to make it so in the file.');
+}
+
+/** Where the game's own files say these animation names out loud. */
+async function mentionsOf(names) {
+  if (!state.model || !(state.game && state.game.here)) return {};
+  try {
+    const { hits } = await api('/api/mentions', { model: state.model.path, names });
+    return hits || {};
+  } catch { return {}; }
+}
+
+/** Which game project the open model belongs to, if it belongs to one. */
+async function whichGame(path) {
+  state.game = null;
+  try {
+    state.game = await api(
+      `/api/games?t=${encodeURIComponent(TOKEN)}&path=${encodeURIComponent(path)}`);
+  } catch { /* the button simply stays off */ }
+  paintSaveState();
+  return state.game;
+}
+
+$('#btn-merge').onclick = mergeAnims;
 
 // ── the joint tree ──────────────────────────────────────────────────
 
@@ -1037,7 +1264,37 @@ function removeKeyHere() {
 
 function markDirty() {
   state.clip.dirty = true;
-  $('#btn-save').textContent = 'Save clip •';
+  if (state.set.current) state.set.current.dirty = true;
+  paintSaveState();
+  renderAnims();
+}
+
+/* The two buttons that write things down, and what they have to say.
+ *
+ * They are deliberately different words for different places. "Save" writes
+ * your clips into ~/Documents/gerak, which is your own filing and affects
+ * nothing else. "Update the game" writes into the game's own asset, which
+ * the game will be playing the next time you run it. Both show a dot when
+ * there is something outstanding. */
+function paintSaveState() {
+  const edited = state.set ? state.set.edited().length : 0;
+  const removed = state.set ? state.set.removed.length : 0;
+  const save = $('#btn-save');
+  save.textContent = edited ? `Save ${edited === 1 ? '' : edited + ' '}•` : 'Save';
+  save.disabled = !state.model;
+
+  const push = $('#btn-push');
+  const pushable = !!(state.game && state.game.pushable);
+  push.disabled = !pushable || !(edited || removed);
+  push.textContent = state.game && state.game.here
+    ? `Update ${state.game.here.game}` : 'Update the game';
+  push.title = !state.model ? 'Open a character first'
+    : !pushable ? 'Only a .glb can be updated in place — export this one first'
+    : !(edited || removed) ? 'Nothing has been edited yet'
+    : state.game.here
+      ? `Put ${edited || 'no'} edited animation${edited === 1 ? '' : 's'} back into `
+        + `${state.game.here.game}/${state.game.here.relative}`
+      : 'Choose a game to send these animations to';
 }
 
 // ── the frame, and the timeline ─────────────────────────────────────
@@ -1262,28 +1519,167 @@ $('#btn-mirror').onclick = () => {
 
 // ── saving and exporting ────────────────────────────────────────────
 
+/* Save writes every animation you have edited into ~/Documents/gerak/clips,
+ * not only the one on screen. Switching between a character's twelve
+ * animations and then being asked to save them one at a time would put the
+ * bookkeeping back on you, which is the thing the set was built to take
+ * away.
+ *
+ * A clip is filed under the character and the animation together, so
+ * "athlete_tall-smash" rather than "smash" — twelve of his characters have
+ * an animation called run. */
 $('#btn-save').onclick = async () => {
-  if (state.clip.isEmpty()) { toast('Nothing to save yet — no keys.'); return; }
-  const name = prompt('Name this clip', state.clip.name);
-  if (!name) return;
-  state.clip.name = name;
+  state.set.stash(state.clip);
+  const edited = state.set.edited();
+
+  if (!edited.length) {
+    toast(state.set.removed.length
+      ? 'The merge is not saved here — press Update the game to apply it.'
+      : 'Nothing to save yet — no edits.');
+    return;
+  }
+
+  const base = state.model ? state.model.name.replace(/\.\w+$/, '') : 'clip';
+  const saved = [];
   try {
-    await api('/api/clip/save', state.clip.toJSON());
-    state.clip.dirty = false;
-    $('#btn-save').textContent = 'Save clip';
-    toast(`Saved "${name}".`);
-    loadClips();
-    // Saving a clip means this model is something you are working on, so it
-    // goes on bengkel's list. Merely opening a model does not.
-    if (INSIDE_BENGKEL && state.model) {
-      window.bengkel.note({
-        path: state.model.path,
-        name: state.model.name.replace(/\.\w+$/, ''),
-        what: `saved the clip "${name}"`,
-      });
+    for (const entry of edited) {
+      const doc = entry.clip.toJSON();
+      doc.name = `${base}-${entry.name}`.replace(/^(.+)-\1$/, '$1');
+      doc.anim = entry.name;
+      doc.model = state.model ? state.model.path : doc.model;
+      await api('/api/clip/save', doc);
+      saved.push(entry.name);
     }
   } catch (err) {
     toast(`Could not save: ${err.message}`, true);
+    return;
+  }
+
+  for (const entry of edited) { entry.dirty = false; entry.clip.dirty = false; }
+  state.clip.dirty = false;
+  paintSaveState();
+  renderAnims();
+  toast(saved.length === 1
+    ? `Saved "${saved[0]}".`
+    : `Saved ${saved.length} animations: ${saved.join(', ')}.`);
+  loadClips();
+
+  // Saving a clip means this model is something you are working on, so it
+  // goes on bengkel's list. Merely opening a model does not.
+  if (INSIDE_BENGKEL && state.model) {
+    window.bengkel.note({
+      path: state.model.path,
+      name: state.model.name.replace(/\.\w+$/, ''),
+      what: saved.length === 1 ? `saved the clip "${saved[0]}"`
+                               : `saved ${saved.length} animations`,
+    });
+  }
+};
+
+/* ── Update the game ─────────────────────────────────────────────────
+ *
+ * The button he asked for: the animation he edited changes in the game too,
+ * without an export, a copy and a drag into a folder.
+ *
+ * What it does is narrow on purpose. It writes the animations you edited
+ * into the game's own .glb and takes out the ones you merged away, and it
+ * touches nothing else in that file — not the mesh, not the skin, not the
+ * materials, and not the animations you did not edit, which keep their
+ * original curves down to the interpolation. A copy of the file as it was
+ * goes into ~/Documents/gerak/backups first, every time.
+ *
+ * gerak's D-008 said the original file is never touched, and this is the
+ * exception to it. It is the exception because he asked for it by name, and
+ * because the alternative — export, find the file, copy it over the old one —
+ * is the same write with more chances to put it in the wrong place.
+ */
+$('#btn-push').onclick = async () => {
+  if (!state.model) return;
+  player.pause();
+  state.set.stash(state.clip);
+
+  const { clips, remove } = state.set.push();
+  if (!clips.length && !remove.length) { toast('Nothing has been edited yet.'); return; }
+
+  const here = state.game && state.game.here;
+  let game = '';
+
+  if (!here) {
+    // It came from somewhere that is not a game, so ask which game it is for.
+    // That is a copy into the project rather than a write-back.
+    const games = ((state.game && state.game.games) || []).filter((g) => g.godot);
+    if (!games.length) { toast('No game project was found to send this to.', true); return; }
+    game = await sheet({
+      title: 'Which game is this for?',
+      body: `<p><strong>${escapeHTML(state.model.name)}</strong> is not inside a game
+             project, so gerak will put a copy into the one you choose and write
+             the animations into that copy.</p>`,
+      actions: [...games.map((g) => ({ id: g.game, label: g.game })),
+                { id: null, label: 'Cancel' }],
+    });
+    if (!game) return;
+  } else {
+    const what = [
+      clips.length && `${clips.length} edited animation${clips.length === 1 ? '' : 's'}`,
+      remove.length && `${remove.length} deleted (${remove.join(', ')})`,
+    ].filter(Boolean).join(', and ');
+    const ok = await sheet({
+      title: `Update ${here.game}?`,
+      body: `<p>gerak will write ${what} into</p>
+             <p><code>${escapeHTML(here.relative)}</code></p>
+             <p>Everything else in that file is left exactly as it is, and a
+             copy of it goes into <code>~/Documents/gerak/backups</code> first.</p>`,
+      actions: [{ id: 'go', label: 'Update it', primary: true },
+                { id: null, label: 'Cancel' }],
+    });
+    if (!ok) return;
+  }
+
+  const btn = $('#btn-push');
+  const was = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Writing…';
+
+  try {
+    const result = await api('/api/push', {
+      model: state.model.path, clips, remove, game,
+    });
+
+    state.set.settled();
+    state.clip.dirty = false;
+    paintSaveState();
+    renderAnims();
+
+    const said = [];
+    if (result.replaced.length) said.push(`replaced ${result.replaced.join(', ')}`);
+    if (result.added.length) said.push(`added ${result.added.join(', ')}`);
+    if (result.removed.length) said.push(`deleted ${result.removed.join(', ')}`);
+    if (result.missing_joints.length) {
+      toast(`These joints are not in the game's file, so they were skipped: `
+            + result.missing_joints.join(', '), true);
+    }
+    /* gerak's timeline turns and moves a joint; it does not scale one. So an
+     * animation that was squashing or stretching a bone in the original file
+     * comes back without that part. Say so rather than let it be noticed in
+     * the game — several of his Meshy characters animate scale. */
+    if (result.lost_scale && result.lost_scale.length) {
+      toast(`Note: ${result.lost_scale.join(', ')} had scaling in the original, `
+            + 'which gerak does not animate — that part is gone. '
+            + `The original is in ${result.shownBackup}.`, true);
+    }
+    toast(`${result.game || 'The game'}: ${said.join(', ')}. `
+          + (result.godot ? 'Godot will re-import it when you next focus the editor.' : ''));
+    console.log('[gerak] pushed', result);
+
+    // The library row's animation count is now wrong, and so is the cached
+    // scan behind it.
+    loadLibrary(true);
+  } catch (err) {
+    toast(`Could not update the game: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = was;
+    paintSaveState();
   }
 };
 
@@ -1439,7 +1835,7 @@ async function openClip(meta) {
   if (!state.model || state.model.path !== doc.model) {
     const item = state.library.find((i) => i.path === doc.model);
     if (!item) { toast(`The model this clip was made on has moved: ${doc.model}`, true); return; }
-    state.clip = new Clip();     // so openModel does not ask about unsaved work
+    state.set = new AnimSet();   // so openModel does not ask about unsaved work
     await openModel(item);
   }
 
@@ -1448,14 +1844,34 @@ async function openClip(meta) {
   reference.fromJSON(state.clip.reference);
   $('#fps-field').value = state.clip.fps;
   $('#length-field').value = state.clip.frames;
-  $('#btn-save').textContent = 'Save clip';
+
+  /* A saved clip is a version of one of the character's animations, so it
+   * goes back into the slot it came out of rather than floating beside the
+   * set. `anim` is the name it has inside the file; clips saved before the
+   * set existed do not carry one, and land in whichever slot is open. */
+  const slot = doc.anim ? state.set.indexOf(doc.anim) : state.set.at;
+  const entry = state.set.entries[slot >= 0 ? slot : state.set.at];
+  if (entry) {
+    state.set.at = state.set.entries.indexOf(entry);
+    entry.clip = state.clip;
+    entry.dirty = true;
+    state.clip.name = entry.name;
+  }
+
   setFrame(0);
   renderBoneTree();
   renderTracks();
-  toast(`Opened "${state.clip.name}" — ${state.clip.totalKeys()} keys.`);
+  renderAnims();
+  paintSaveState();
+  toast(`Opened "${meta.name}" — ${state.clip.totalKeys()} keys.`);
 }
 
 // ── the rest of the chrome ──────────────────────────────────────────
+
+function showTab(which) {
+  const tab = document.querySelector(`.tab[data-tab="${which}"]`);
+  if (tab) tab.click();
+}
 
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.onclick = () => {
@@ -1463,6 +1879,7 @@ document.querySelectorAll('.tab').forEach((tab) => {
     document.querySelectorAll('.tab-body').forEach((b) =>
       b.classList.toggle('is-on', b.dataset.body === tab.dataset.tab));
     if (tab.dataset.tab === 'clips') loadClips();
+    if (tab.dataset.tab === 'anims') renderAnims();
   };
 });
 
@@ -1604,6 +2021,11 @@ const COMMANDS = {
   paste: () => { if (!typing()) pasteKeys(); },
   pasteFlipped: () => { if (!typing()) pasteKeys({ flipped: true }); },
   save: () => $('#btn-save').click(),
+  push: () => { if (!$('#btn-push').disabled) $('#btn-push').click(); },
+  merge: () => { showTab('anims'); if (!$('#btn-merge').disabled) $('#btn-merge').click(); },
+  animations: () => showTab('anims'),
+  nextAnim: () => openAnim((state.set.at + 1) % Math.max(1, state.set.length)),
+  prevAnim: () => openAnim((state.set.at - 1 + state.set.length) % Math.max(1, state.set.length)),
   export: () => { $('#export-pop').hidden = false; $('#btn-export-go').focus(); },
   exportNow: () => $('#btn-export-go').click(),
   key: () => keyPose(),
@@ -1641,6 +2063,7 @@ window.gerak = {
   openModel, keyPose, setFrame, renderTracks, loadLibrary, reference,
   renderLimbs, setChainMode, togglePin, applyPins,
   placeSkeleton, showRigPanel, setFacing,
+  openAnim, renderAnims, mergeAnims, sheet, showTab, whichGame,
 };
 
 // ── go ──────────────────────────────────────────────────────────────
@@ -1663,6 +2086,7 @@ async function reopenLast() {
 }
 
 paintHistory();
+renderAnims();
 recallClipboard();
 paintClipboard();
 loadLibrary().then(reopenLast);
