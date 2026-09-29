@@ -7,3 +7,6 @@ __pycache__/
 
 # The built app, and the pieces the build makes on the way.
 native/build/
+
+# Project record: built locally, never committed (it holds session logs)
+docs/index.html
